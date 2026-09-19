@@ -59,9 +59,11 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
+      YOLO_WEIGHTS: /app/license_plate_detector.pt
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
+      - ./license_plate_detector.pt:/app/license_plate_detector.pt
     expose:
       - "8000"
     depends_on:
@@ -90,9 +92,11 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
+      YOLO_WEIGHTS: /app/license_plate_detector.pt
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
+      - ./license_plate_detector.pt:/app/license_plate_detector.pt
     depends_on:
       db:
         condition: service_healthy

@@ -29,12 +29,18 @@ DEBUG = os.environ.get('VERCEL') != '1'
 
 ALLOWED_HOSTS = ['*']
 
-CSRF_TRUSTED_ORIGINS = ['https://*.vusercontent.net', 'https://*.v0.dev', 'https://*.vercel.app']
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.vusercontent.net',
+    'https://*.v0.dev',
+    'https://*.vercel.app',
+    'http://localhost:3000',
+]
 
 # CORS: allow the local React (Vite) dev server to consume the REST + WS APIs.
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:3000',
 ]
 
 

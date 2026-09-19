@@ -13,3 +13,16 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+# Python
+__pycache__/
+*.pyc
+*.pt
+
+# YOLO/Datasets
+dataset.zip
+dataset_tmp/
+license_plate_dataset/
+runs/
+Videos/
+web_logs.txt
+

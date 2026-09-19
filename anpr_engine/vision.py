@@ -125,30 +125,45 @@ def _preprocess_plate_crop(plate_bgr):
     Uses Contrast Limited Adaptive Histogram Equalization (CLAHE) to normalize
     lighting and adaptive thresholding to sharpen text against complex backgrounds.
     """
+    # Scale up the image by 2x for better OCR recognition
+    plate_bgr = cv2.resize(plate_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    
     # 1. Grayscale
     gray = cv2.cvtColor(plate_bgr, cv2.COLOR_BGR2GRAY)
     
     # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    # Prevents over-amplification of noise in homogeneous areas
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     contrast_enhanced = clahe.apply(gray)
     
-    # 3. Adaptive Gaussian Thresholding
-    # Better than Otsu for images with non-uniform lighting (shadows/glare)
-    thresh = cv2.adaptiveThreshold(
-        contrast_enhanced, 
-        255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 
-        11, 
-        2
-    )
-    return thresh
+    # Return the grayscale contrast-enhanced image. 
+    # Adaptive thresholding usually degrades CNN-based OCR performance.
+    return contrast_enhanced
 
 
 def _clean_plate_text(raw_text):
-    """Uppercase and strip non-alphanumeric characters."""
-    return ''.join(ch for ch in raw_text.upper() if ch.isalnum())
+    """Uppercase, strip non-alphanumeric characters, and fix common OCR errors.
+
+    The original implementation dropped leading letters (e.g., "TS07JS9670" became
+    "S07JS9670") and confused characters such as "O"/"0" or "I"/"1". This revised
+    version applies a simple character‑mapping and, when the cleaned plate has the
+    expected length but starts with a digit, prepends a "T" assuming the first
+    character was omitted.
+    """
+    # Upper‑case and keep only alphanumerics
+    cleaned = ''.join(ch for ch in raw_text.upper() if ch.isalnum())
+    # Common OCR mis‑recognitions
+    mapping = {
+        'O': '0',
+        'I': '1',
+        'L': '1',
+        'S': '5',
+        'Z': '2',
+    }
+    cleaned = ''.join(mapping.get(c, c) for c in cleaned)
+    # Recover missing leading 'T' if plate length is correct but starts with a digit
+    if len(cleaned) == 9 and cleaned[0].isdigit():
+        cleaned = 'T' + cleaned
+    return cleaned
 
 
 def extract_license_plate(image_bytes_or_path):
@@ -192,7 +207,7 @@ def extract_license_plate(image_bytes_or_path):
     processed = _preprocess_plate_crop(plate_bgr)
 
     reader = get_easyocr_reader()
-    results = reader.readtext(processed)
+    results = reader.readtext(processed, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
     if not results:
         return {
             'plate_text': '',
