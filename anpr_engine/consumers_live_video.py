@@ -21,6 +21,7 @@ class LiveVideoConsumer(AsyncWebsocketConsumer):
             try:
                 data = json.loads(text_data)
                 frame_data_url = data.get('frame')
+                scale = data.get('scale', 1)
                 
                 if frame_data_url and frame_data_url.startswith('data:image'):
                     # Extract the base64 part
@@ -35,6 +36,7 @@ class LiveVideoConsumer(AsyncWebsocketConsumer):
                         'bbox': detection.get('bbox'),
                         'plate_text': detection.get('plate_text'),
                         'confidence': detection.get('confidence'),
+                        'scale': scale,
                     }
                     
                     await self.send(text_data=json.dumps(response))

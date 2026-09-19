@@ -26,3 +26,6 @@ runs/
 Videos/
 web_logs.txt
 
+kaggle_dataset/
+lp_dataset2/
+pretrained_weights/

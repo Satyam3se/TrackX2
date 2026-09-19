@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-// Helper to compute correct WebSocket base URL (Docker vs local dev)
+// Helper to compute correct WebSocket base URL
 const getWsBase = () => {
   const host = window.location.hostname;
-  const isDocker = host === 'localhost' && window.location.port === '3000';
-  return isDocker ? `ws://${host}:8000/ws/` : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${window.location.port ? ':' + window.location.port : ''}/ws/`;
+  // Django backend runs on port 9000 (8000 is held by Docker Desktop)
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${host}:9000/ws/`;
 };
 export default function LiveVideoProcessor() {
   const [videoFile, setVideoFile] = useState(null);
@@ -11,14 +11,16 @@ export default function LiveVideoProcessor() {
   const [wsConnected, setWsConnected] = useState(false);
   const [plateInfo, setPlateInfo] = useState(null);
   const [videoSize, setVideoSize] = useState(800);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  // Removed unused processing state
   const wsRef = useRef(null);
-  const animationRef = useRef(null);
+const canvasRef = useRef(null);
+const animationRef = useRef(null);
+const videoRef = useRef(null);
   
   // Connect to WebSocket on mount
   useEffect(() => {
     const ws = new WebSocket(`${getWsBase()}live-video/`);
+    wsRef.current = ws;
     
     ws.onopen = () => {
       console.log('Live Video WebSocket Connected');
@@ -35,7 +37,15 @@ export default function LiveVideoProcessor() {
       // We got bounding box data, let's draw it immediately on the canvas!
       const canvas = canvasRef.current;
       const video = videoRef.current;
-      if (!canvas || !video || !data.bbox) return;
+      if (!canvas || !video) {
+        return;
+      }
+      if (!data.bbox) {
+        // No detection in this frame; skip drawing.
+        return;
+      }
+      // Continue to drawing below
+      
       
       const ctx = canvas.getContext('2d');
       // Set canvas size to match video dimensions
@@ -46,7 +56,13 @@ export default function LiveVideoProcessor() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
       // Draw Bounding Box
-      const [x1, y1, x2, y2] = data.bbox;
+      // The backend returns coordinates relative to the downscaled frame.
+      // We must scale them back up to the original video dimensions.
+      const scale = data.scale || 1;
+      const x1 = data.bbox[0] / scale;
+      const y1 = data.bbox[1] / scale;
+      const x2 = data.bbox[2] / scale;
+      const y2 = data.bbox[3] / scale;
       const width = x2 - x1;
       const height = y2 - y1;
       
@@ -66,6 +82,8 @@ export default function LiveVideoProcessor() {
         // Update UI plate info state
         setPlateInfo(`${data.plate_text} (${(data.confidence * 100).toFixed(1)}%)`);
       }
+      
+      // Frame progression is handled by requestAnimationFrame loop; no manual timeout needed
     };
     
     ws.onclose = () => {
@@ -73,12 +91,21 @@ export default function LiveVideoProcessor() {
       setWsConnected(false);
     };
     
-    wsRef.current = ws;
-    
-    return () => {
-      if (ws.readyState === 1) ws.close();
+    // Replace setTimeout loop with requestAnimationFrame for smoother processing
+    let animationId = null;
+    const loop = () => {
+      if (isPlaying) {
+        processFrame();
+        animationRef.current = requestAnimationFrame(loop);
+      }
     };
-  }, []);
+    if (isPlaying) {
+      animationId = requestAnimationFrame(loop);
+    }
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+    };
+  }, [isPlaying]);
   
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -95,26 +122,25 @@ export default function LiveVideoProcessor() {
     
     if (video && !video.paused && !video.ended && ws && ws.readyState === WebSocket.OPEN) {
       // Create a temporary hidden canvas to extract the image data
+      // Downscale to max 640 width to drastically speed up CPU YOLO inference
+      const MAX_WIDTH = 640;
+      const scale = video.videoWidth > MAX_WIDTH ? MAX_WIDTH / video.videoWidth : 1;
+      const targetWidth = video.videoWidth * scale;
+      const targetHeight = video.videoHeight * scale;
+
       const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = video.videoWidth;
-      tempCanvas.height = video.videoHeight;
+      tempCanvas.width = targetWidth;
+      tempCanvas.height = targetHeight;
+      
       const ctx = tempCanvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
       
       // Compress frame to save bandwidth (JPEG, quality 0.5)
       const frameDataUrl = tempCanvas.toDataURL('image/jpeg', 0.5);
       
-      // Send to backend
-      ws.send(JSON.stringify({ frame: frameDataUrl }));
+      // Send to backend along with the scale factor so we can fix bounding boxes
+      ws.send(JSON.stringify({ frame: frameDataUrl, scale: scale }));
     }
-    
-    // Schedule next frame extraction. 
-    // We throttle this to roughly 10fps so we don't melt the backend.
-    setTimeout(() => {
-      if (isPlaying) {
-         animationRef.current = requestAnimationFrame(processFrame);
-      }
-    }, 100); 
   };
   
   const togglePlay = () => {
@@ -219,12 +245,42 @@ export default function LiveVideoProcessor() {
             Select a video file to begin
           </div>
         )}
-        {/* Display latest detected plate */}
-        {plateInfo && (
-          <div style={{ marginTop: '0.5rem', color: '#00ffcc', fontFamily: 'Inter, sans-serif', fontSize: '1.1rem' }}>
-            Detected Plate: {plateInfo}
+        {/* Display latest detected plate in a dedicated box */}
+        <div style={{ 
+          marginTop: '1.5rem', 
+          width: '100%',
+          padding: '1.5rem',
+          background: 'rgba(11, 15, 25, 0.8)',
+          border: '2px solid #2a3553',
+          borderRadius: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
+        }}>
+          <h3 style={{ margin: '0 0 1rem 0', color: '#8a9ab8', fontSize: '1rem', textTransform: 'uppercase', letterSpacing: '2px' }}>
+            Detected License Plate
+          </h3>
+          <div style={{
+            background: plateInfo ? 'rgba(0, 255, 204, 0.1)' : '#1a2235',
+            border: plateInfo ? '2px solid #00ffcc' : '2px dashed #2a3553',
+            borderRadius: '8px',
+            padding: '1rem 2rem',
+            minWidth: '300px',
+            textAlign: 'center',
+            transition: 'all 0.3s ease'
+          }}>
+            {plateInfo ? (
+              <span style={{ color: '#00ffcc', fontFamily: '"JetBrains Mono", monospace', fontSize: '2rem', fontWeight: 'bold' }}>
+                {plateInfo}
+              </span>
+            ) : (
+              <span style={{ color: '#6a7a9c', fontStyle: 'italic', fontSize: '1.2rem' }}>
+                Scanning for plates...
+              </span>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

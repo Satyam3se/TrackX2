@@ -64,8 +64,8 @@ services:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
       - ./license_plate_detector.pt:/app/license_plate_detector.pt
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     depends_on:
       db:
         condition: service_healthy

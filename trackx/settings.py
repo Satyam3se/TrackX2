@@ -96,10 +96,17 @@ ASGI_APPLICATION = 'trackx.asgi.application'
 
 CHANNEL_LAYERS = {
     'default': {
+        # Use Redis in production (Docker), fall back to in-memory for local dev
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
             'hosts': [os.environ.get('REDIS_URL', ('127.0.0.1', 6379))],
+            'capacity': 1500,
+            'expiry': 10,
         },
+    },
+} if os.environ.get('REDIS_URL') else {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
 }
 

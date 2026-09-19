@@ -13,7 +13,7 @@ from functools import lru_cache
 import cv2
 import numpy as np
 
-DETECTION_CONF_THRESHOLD = 0.25
+DETECTION_CONF_THRESHOLD = 0.1
 
 _lock = threading.Lock()
 _YOLO_CLS = None
@@ -36,13 +36,23 @@ def _load_yolo_class():
 def get_yolo_model(weights_path: str | None = None):
     """Return a cached YOLO model instance.
 
-    Defaults to the base ``yolov8n.pt``; for accurate plate detection point
-    ``YOLO_WEIGHTS`` at license-plate fine-tuned weights (e.g. a Roboflow
-    ``license_plate_detector.pt`` export).
+    Defaults to the base ``yolov8n.pt``; for accurate plate detection use
+    ``YOLO_WEIGHTS`` pointing to fine‑tuned weights (e.g. ``license_plate_detector.pt``).
     """
     if weights_path is None:
         weights_path = os.environ.get('YOLO_WEIGHTS', 'yolov8n.pt')
-    return _load_yolo_class()(weights_path)
+    try:
+        # Attempt loading with device argument (works on older versions)
+        model = _load_yolo_class()(weights_path, device='cpu')
+    except Exception:
+        # Fallback for newer versions that reject the device kwarg
+        model = _load_yolo_class()(weights_path)
+        try:
+            model.to('cpu')
+        except Exception:
+            pass
+    print(f"[DEBUG] YOLO model loaded with weights: {weights_path}, model: {model}")
+    return model
 
 
 @lru_cache(maxsize=1)
