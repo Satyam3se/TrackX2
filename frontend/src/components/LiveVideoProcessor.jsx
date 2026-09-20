@@ -1,10 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
-// Helper to compute correct WebSocket base URL
-const getWsBase = () => {
-  const host = window.location.hostname;
-  // Django backend runs on port 9000 (8000 is held by Docker Desktop)
-  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${host}:9000/ws/`;
-};
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+// Same-origin relative path by default: proxied by Nginx (prod, :3000) and by
+// Vite (dev, :5173 -> :8000), so no port/URL hardcoding is needed. Override
+// only when the backend truly lives on another host.
+const WS_LIVE_URL = import.meta.env.VITE_WS_LIVE_URL ?? '/ws/live-video/';
+const MAX_RETRY_DELAY = 15_000;
 export default function LiveVideoProcessor() {
   const [videoFile, setVideoFile] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -13,17 +12,20 @@ export default function LiveVideoProcessor() {
   const [videoSize, setVideoSize] = useState(800);
   // Removed unused processing state
   const wsRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef(null);
+  const disposedRef = useRef(false);
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
   const videoRef = useRef(null);
 
-  // Connect to WebSocket on mount
-  useEffect(() => {
-    const ws = new WebSocket(`${getWsBase()}live-video/`);
+  // Connect once, with exponential-backoff auto-reconnect like the alerts hook.
+  const connect = useCallback(() => {
+    const ws = new WebSocket(WS_LIVE_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('Live Video WebSocket Connected');
+      retryCountRef.current = 0;
       setWsConnected(true);
     };
 
@@ -96,23 +98,36 @@ export default function LiveVideoProcessor() {
     };
 
     ws.onclose = () => {
-      console.log('Live Video WebSocket Disconnected');
       setWsConnected(false);
+      if (disposedRef.current) return;
+      const delay = Math.min(1000 * 2 ** retryCountRef.current, MAX_RETRY_DELAY);
+      retryCountRef.current += 1;
+      retryTimerRef.current = setTimeout(connect, delay);
     };
 
-    // Replace setTimeout loop with requestAnimationFrame for smoother processing
-    let animationId = null;
-    const loop = () => {
-      if (isPlaying) {
-        processFrame();
-        animationRef.current = requestAnimationFrame(loop);
-      }
-    };
-    if (isPlaying) {
-      animationId = requestAnimationFrame(loop);
-    }
+    ws.onerror = () => ws.close();
+  }, []);
+
+  useEffect(() => {
+    disposedRef.current = false;
+    connect();
     return () => {
-      if (animationId) cancelAnimationFrame(animationId);
+      disposedRef.current = true;
+      clearTimeout(retryTimerRef.current);
+      wsRef.current?.close();
+    };
+  }, [connect]);
+
+  // Replace setTimeout loop with requestAnimationFrame for smoother processing
+  useEffect(() => {
+    if (!isPlaying) return;
+    const loop = () => {
+      processFrame();
+      animationRef.current = requestAnimationFrame(loop);
+    };
+    animationRef.current = requestAnimationFrame(loop);
+    return () => {
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
   }, [isPlaying]);
 

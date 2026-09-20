@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// Same-origin relative path is the default (works behind the Docker Nginx
-// WebSocket proxy). Override for local dev via VITE_WS_URL, e.g.
+// Same-origin relative path is the default. It works through the Docker Nginx
+// WebSocket proxy in production AND through the Vite dev proxy in development.
+// Override only when the backend truly lives on another host, e.g.
 //   VITE_WS_URL=ws://localhost:8000/ws/alerts/
-const WS_URL =
-  import.meta.env.VITE_WS_URL ??
-  (import.meta.env.PROD
-    ? '/ws/alerts/'
-    : 'ws://localhost:8000/ws/alerts/');
+const WS_URL = import.meta.env.VITE_WS_URL ?? '/ws/alerts/';
 const MAX_RETRY_DELAY = 30_000;
 const MAX_ALERTS = 100;
 

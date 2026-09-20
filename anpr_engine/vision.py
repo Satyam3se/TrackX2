@@ -108,9 +108,22 @@ def get_yolo_model(weights_path: str | None = None):
 
 
 DETECTOR_CHAIN = (
-    'pretrained_weights/platevision_plate_detector.pt',  # tuned plate detector (mAP50 .92)
-    'license_plate_detector.pt',                         # TrackX Indian-plate fine-tune
+    'pretrained_weights/platevision_plate_detector.pt',
+    'license_plate_detector.pt',
+    'runs/detect/license_plate_model-3/weights/best.pt',
+    'runs/detect/runs/detect/lp_quick/weights/best.pt',
 )
+
+
+def resolve_detector_path():
+    """Return the detector weights path that get_plate_detector() will use."""
+    env_weights = os.environ.get('YOLO_WEIGHTS')
+    if env_weights:
+        return env_weights
+    for path in DETECTOR_CHAIN:
+        if os.path.isfile(path):
+            return path
+    return 'yolov8n.pt'  # Default
 
 
 def get_plate_detector():

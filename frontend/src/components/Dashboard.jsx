@@ -199,10 +199,13 @@ export default function Dashboard() {
             </svg>
             HOTLIST
           </button>
-          <a
+          <button
             className="nav-link"
-            href={`/map/${(query || plateInput).trim() ? `?plate=${encodeURIComponent((query || plateInput).trim())}` : ''}`}
-            title="Open live MapLibre map with the searched plate"
+            type="button"
+            onClick={() =>
+              document.getElementById('map')?.scrollIntoView({ behavior: 'smooth' })
+            }
+            title="Scroll to the live city map"
           >
             <svg
               width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -213,7 +216,7 @@ export default function Dashboard() {
               <path d="M9 3v17M15 5v17" />
             </svg>
             LIVE MAP
-          </a>
+          </button>
           <div className="clock mono">{clock}</div>
           <button
             className={`icon-btn alarm ${audioEnabled ? 'active' : ''}`}

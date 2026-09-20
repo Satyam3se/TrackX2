@@ -192,6 +192,7 @@ code {
   color: #00e5ff;
   font-size: 12px;
   font-weight: 600;
+  font-family: inherit;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   text-decoration: none;
@@ -199,6 +200,7 @@ code {
   background: #00e5ff1a;
   padding: 7px 12px;
   border-radius: 7px;
+  cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
 

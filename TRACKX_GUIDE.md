@@ -60,9 +60,12 @@ TrackX is built on a modern, distributed architecture designed for scalability a
    ```
 
 ### Accessing the System
-- **Command Center (UI):** `http://localhost:3000`
-- **Admin Panel (Management):** `http://localhost:3000/admin/`
+- **Command Center (UI):** `http://localhost:3000` (Nginx-served SPA)
+- **Legacy Port (API):** `http://localhost:8000` (Redirects automatically to :3000)
+- **Admin Panel:** `http://localhost:3000/admin/`
 - **API Documentation:** `http://localhost:3000/api/v1/`
+
+> **Note:** The system is now unified on a single origin. Opening the project on port 8000 will automatically redirect you to the React Command Center at port 3000 to ensure a consistent experience.
 
 ---
 

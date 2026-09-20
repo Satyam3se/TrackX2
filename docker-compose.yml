@@ -59,11 +59,13 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
-      YOLO_WEIGHTS: /app/license_plate_detector.pt
+      REACT_APP_URL: http://localhost:3000/
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
       - ./license_plate_detector.pt:/app/license_plate_detector.pt
+      - ./pretrained_weights:/app/pretrained_weights
+      - ./runs:/app/runs
     ports:
       - "8000:8000"
     depends_on:
@@ -92,11 +94,13 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
-      YOLO_WEIGHTS: /app/license_plate_detector.pt
+      REACT_APP_URL: http://localhost:3000/
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
       - ./license_plate_detector.pt:/app/license_plate_detector.pt
+      - ./pretrained_weights:/app/pretrained_weights
+      - ./runs:/app/runs
     depends_on:
       db:
         condition: service_healthy
@@ -110,6 +114,7 @@ services:
       args:
         VITE_API_BASE_URL: /api/v1
         VITE_WS_URL: /ws/alerts/
+        VITE_WS_LIVE_URL: /ws/live-video/
     container_name: trackx-frontend
     restart: unless-stopped
     ports:
