@@ -13,27 +13,27 @@ export default function LiveVideoProcessor() {
   const [videoSize, setVideoSize] = useState(800);
   // Removed unused processing state
   const wsRef = useRef(null);
-const canvasRef = useRef(null);
-const animationRef = useRef(null);
-const videoRef = useRef(null);
-  
+  const canvasRef = useRef(null);
+  const animationRef = useRef(null);
+  const videoRef = useRef(null);
+
   // Connect to WebSocket on mount
   useEffect(() => {
     const ws = new WebSocket(`${getWsBase()}live-video/`);
     wsRef.current = ws;
-    
+
     ws.onopen = () => {
       console.log('Live Video WebSocket Connected');
       setWsConnected(true);
     };
-    
+
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.error) {
         console.error('WebSocket Error:', data.error);
         return;
       }
-      
+
       // We got bounding box data, let's draw it immediately on the canvas!
       const canvas = canvasRef.current;
       const video = videoRef.current;
@@ -45,16 +45,16 @@ const videoRef = useRef(null);
         return;
       }
       // Continue to drawing below
-      
-      
+
+
       const ctx = canvas.getContext('2d');
       // Set canvas size to match video dimensions
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      
+
       // Clear previous drawings
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
+
       // Draw Bounding Box
       // The backend returns coordinates relative to the downscaled frame.
       // We must scale them back up to the original video dimensions.
@@ -65,16 +65,16 @@ const videoRef = useRef(null);
       const y2 = data.bbox[3] / scale;
       const width = x2 - x1;
       const height = y2 - y1;
-      
+
       ctx.strokeStyle = '#00ffcc'; // Cyberpunk cyan!
       ctx.lineWidth = 4;
       ctx.strokeRect(x1, y1, width, height);
-      
+
       // Draw Plate Text if we found one
       if (data.plate_text) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(x1, y1 - 40, width, 40);
-        
+
         ctx.fillStyle = '#00ffcc';
         ctx.font = '24px "JetBrains Mono", monospace';
         ctx.fillText(`${data.plate_text} (${(data.confidence * 100).toFixed(1)}%)`, x1 + 5, y1 - 10);
@@ -82,15 +82,15 @@ const videoRef = useRef(null);
         // Update UI plate info state
         setPlateInfo(`${data.plate_text} (${(data.confidence * 100).toFixed(1)}%)`);
       }
-      
+
       // Frame progression is handled by requestAnimationFrame loop; no manual timeout needed
     };
-    
+
     ws.onclose = () => {
       console.log('Live Video WebSocket Disconnected');
       setWsConnected(false);
     };
-    
+
     // Replace setTimeout loop with requestAnimationFrame for smoother processing
     let animationId = null;
     const loop = () => {
@@ -106,7 +106,7 @@ const videoRef = useRef(null);
       if (animationId) cancelAnimationFrame(animationId);
     };
   }, [isPlaying]);
-  
+
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -114,12 +114,12 @@ const videoRef = useRef(null);
       setVideoFile(url);
     }
   };
-  
+
   // The magic loop that extracts frames and sends them to the backend
   const processFrame = () => {
     const video = videoRef.current;
     const ws = wsRef.current;
-    
+
     if (video && !video.paused && !video.ended && ws && ws.readyState === WebSocket.OPEN) {
       // Create a temporary hidden canvas to extract the image data
       // Downscale to max 640 width to drastically speed up CPU YOLO inference
@@ -131,18 +131,18 @@ const videoRef = useRef(null);
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = targetWidth;
       tempCanvas.height = targetHeight;
-      
+
       const ctx = tempCanvas.getContext('2d');
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-      
+
       // Compress frame to save bandwidth (JPEG, quality 0.5)
       const frameDataUrl = tempCanvas.toDataURL('image/jpeg', 0.5);
-      
+
       // Send to backend along with the scale factor so we can fix bounding boxes
       ws.send(JSON.stringify({ frame: frameDataUrl, scale: scale }));
     }
   };
-  
+
   const togglePlay = () => {
     const video = videoRef.current;
     if (video.paused) {
@@ -159,19 +159,19 @@ const videoRef = useRef(null);
   return (
     <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', background: '#0b0f19', color: '#e1e5ee', fontFamily: 'Inter, sans-serif' }}>
       <h1>Live Video ANPR Processing</h1>
-      
+
       {!wsConnected && (
         <div style={{ color: '#ff4d4d', background: 'rgba(255, 77, 77, 0.1)', padding: '1rem', borderRadius: '8px' }}>
           Backend WebSocket Disconnected. Is the Django server running?
         </div>
       )}
-      
-      <div style={{ 
-        width: '100%', 
-        maxWidth: '800px', 
-        display: 'flex', 
-        gap: '1rem', 
-        justifyContent: 'center', 
+
+      <div style={{
+        width: '100%',
+        maxWidth: '800px',
+        display: 'flex',
+        gap: '1rem',
+        justifyContent: 'center',
         alignItems: 'center',
         position: 'sticky',
         top: '1rem',
@@ -182,39 +182,39 @@ const videoRef = useRef(null);
         borderRadius: '8px',
         boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
       }}>
-        <input 
-          type="file" 
-          accept="video/*" 
+        <input
+          type="file"
+          accept="video/*"
           onChange={handleFileChange}
           style={{ padding: '0.5rem', background: '#1a2235', border: '1px solid #2a3553', borderRadius: '4px', color: 'white' }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <label style={{ fontSize: '0.9rem', color: '#8a9ab8' }}>Screen Size:</label>
-          <button 
+          <button
             onClick={() => setVideoSize(Math.max(400, Number(videoSize) - 50))}
             style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           >-</button>
-          <input 
-            type="range" 
-            min="400" 
-            max="1200" 
+          <input
+            type="range"
+            min="400"
+            max="1200"
             step="50"
-            value={videoSize} 
-            onChange={(e) => setVideoSize(Number(e.target.value))} 
+            value={videoSize}
+            onChange={(e) => setVideoSize(Number(e.target.value))}
             style={{ cursor: 'pointer' }}
           />
-          <button 
+          <button
             onClick={() => setVideoSize(Math.min(1200, Number(videoSize) + 50))}
             style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           >+</button>
-          <button 
+          <button
             onClick={() => document.getElementById('live-video-scroller').scrollBy({ top: 300, behavior: 'smooth' })}
             style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: '0.5rem' }}
             title="Scroll Down"
           >↓</button>
         </div>
         {videoFile && (
-          <button 
+          <button
             onClick={togglePlay}
             style={{ padding: '0.5rem 1rem', background: isPlaying ? '#ff4d4d' : '#00ffcc', color: '#0b0f19', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}
           >
@@ -226,7 +226,7 @@ const videoRef = useRef(null);
       <div style={{ position: 'relative', width: '100%', maxWidth: `${videoSize}px`, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,255,204,0.1)', transition: 'max-width 0.3s ease' }}>
         {videoFile ? (
           <>
-            <video 
+            <video
               ref={videoRef}
               src={videoFile}
               style={{ width: '100%', display: 'block' }}
@@ -235,7 +235,7 @@ const videoRef = useRef(null);
               onEnded={() => setIsPlaying(false)}
             />
             {/* The transparent overlay canvas where we draw the bounding boxes */}
-            <canvas 
+            <canvas
               ref={canvasRef}
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
             />
@@ -246,8 +246,8 @@ const videoRef = useRef(null);
           </div>
         )}
         {/* Display latest detected plate in a dedicated box */}
-        <div style={{ 
-          marginTop: '1.5rem', 
+        <div style={{
+          marginTop: '1.5rem',
           width: '100%',
           padding: '1.5rem',
           background: 'rgba(11, 15, 25, 0.8)',

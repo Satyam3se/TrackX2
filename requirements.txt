@@ -13,3 +13,12 @@ Pillow
 channels>=4.0
 channels_redis>=4.1
 daphne>=4.0
+# Optional-but-recommended fast stack (mftnakrsu ANPR port):
+# - fast-plate-ocr: cct-s-v2 ONNX reads a plate crop in ~ms with per-char
+#   confidences, ~100x faster than EasyOCR (used as primary OCR)
+# - fast-alpr: YOLOv9-t-384 ONNX detector for 65+ country plates (fallback)
+# - onnxruntime: ONNX inference backend
+# Code degrades gracefully to the EasyOCR/YOLO path if any of these are absent.
+fast-alpr>=0.4.0
+fast-plate-ocr>=1.1.0
+onnxruntime>=1.20
