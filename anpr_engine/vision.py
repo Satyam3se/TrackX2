@@ -266,20 +266,33 @@ def _detect_plate_boxes(model, image_bgr):
     that some detectors emit when no plate is actually in frame -- feeding
     those to OCR wastes many seconds per frame and yields garbage text.
     """
+    boxes = _detect_plate_boxes_many(model, image_bgr)
+    return boxes[0] if boxes else None
+
+
+def _detect_plate_boxes_many(model, image_bgr):
+    """Return *all* geometry-valid plate bboxes ``[[x1, y1, x2, y2], ...]``.
+
+    Same candidate selection and sanity filter as ``_detect_plate_boxes`` but
+    keeps every passing box instead of collapsing to the best one, so a frame
+    with several vehicles gets one track + OCR pass per plate (the
+    anpr-pipeline reference detects and reads every plate per frame). Sorted
+    by confidence, highest first.
+    """
     results = model.predict(
         source=image_bgr,
         conf=DETECTION_CONF_THRESHOLD,
         verbose=False,
     )
     if not results:
-        return None
+        return []
     boxes = results[0].boxes
     if boxes is None or len(boxes) == 0:
-        return None
+        return []
     xyxy = boxes.xyxy.cpu().numpy()
     confs = boxes.conf.cpu().numpy() if boxes.conf is not None else None
     if confs is None:
-        return None
+        return []
 
     names = getattr(model, 'names', None)
     plate_classes = []
@@ -314,16 +327,12 @@ def _detect_plate_boxes(model, image_bgr):
             continue
         if area_frac > PLATE_MAX_AREA_FRACTION:
             continue  # full-frame false positive
-        valid.append((i, aspect, area_frac))
+        valid.append(
+            ([int(round(float(v))) for v in xyxy[i]], float(confs[i]))
+        )
 
-    if not valid:
-        return None
-
-    best_idx = max(valid, key=lambda t: float(confs[t[0]]))[0]
-    x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy[best_idx]]
-    # Snap the loose box inward is not needed: 12px pad compensates. But a real
-    # plate box can be very tight; run OCR on a slightly padded crop downstream.
-    return x1, y1, x2, y2
+    valid.sort(key=lambda item: item[1], reverse=True)
+    return [box for box, _ in valid]
 
 
 def _detect_plate_with_contours(image_bgr):

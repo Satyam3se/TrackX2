@@ -70,17 +70,26 @@ export default function LiveVideoProcessor() {
       ctx.lineWidth = 4;
       ctx.strokeRect(x1, y1, width, height);
 
+      // The backend may have settled on a confirmed (temporal-voted) plate;
+      // prefer it over the noisy single-frame read.
+      const label = data.confirmed || data.plate_text;
+
       // Draw Plate Text if we found one
-      if (data.plate_text) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      if (label) {
+        const isConfirmed = Boolean(data.confirmed);
+        ctx.fillStyle = isConfirmed ? 'rgba(0, 255, 204, 0.9)' : 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(x1, y1 - 40, width, 40);
 
-        ctx.fillStyle = '#00ffcc';
+        ctx.fillStyle = isConfirmed ? '#0b0f19' : '#00ffcc';
         ctx.font = '24px "JetBrains Mono", monospace';
-        ctx.fillText(`${data.plate_text} (${(data.confidence * 100).toFixed(1)}%)`, x1 + 5, y1 - 10);
+        ctx.fillText(
+          `${label}${isConfirmed ? ' ✓' : ''} (${(data.confidence * 100).toFixed(1)}%)`,
+          x1 + 5,
+          y1 - 10
+        );
 
         // Update UI plate info state
-        setPlateInfo(`${data.plate_text} (${(data.confidence * 100).toFixed(1)}%)`);
+        setPlateInfo(`${label} (${(data.confidence * 100).toFixed(1)}%)`);
       }
 
       // Frame progression is handled by requestAnimationFrame loop; no manual timeout needed

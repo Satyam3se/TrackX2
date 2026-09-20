@@ -1,13 +1,15 @@
 """Video stream processing pipeline for ANPR.
 
 Processes video feeds frame-by-frame using YOLOv8 for plate localization
-and OCR for character recognition. Detected plate boxes are IoU-tracked across
-sampled frames, and per-track reads are aggregated with a temporal per-character
-voter (ported from the anpr-pipeline reference project): instead of trusting any
-single noisy low-resolution read, the majority per character position over a
-track's top-K reads is used. This alone lifts low-res accuracy by ~44% relative
-(UFPR-SR-Plates, arXiv:2505.06393). Deduplicates hits within a time window and
-broadcasts real-time WebSocket alerts for hotlisted plates.
+and OCR for character recognition. Every plate detected in a frame is tracked
+separately (multi-plate: several vehicles in view each get their own track +
+OCR pass). Detected plate boxes are IoU-tracked across sampled frames, and
+per-track reads are aggregated with a temporal per-character voter (ported
+from the anpr-pipeline reference project): instead of trusting any single
+noisy low-resolution read, the majority per character position over a
+track's top-K reads is used. This alone lifts low-res accuracy by ~44%
+relative (UFPR-SR-Plates, arXiv:2505.06393). Deduplicates hits within a time
+window and broadcasts real-time WebSocket alerts for hotlisted plates.
 """
 
 import os
@@ -22,7 +24,7 @@ from .models import BlacklistedVehicle, CameraVideoFeed, DetectionLog
 from .tracking import IoUTracker, TemporalVoter
 from .vision import (
     _clean_plate_text,
-    _detect_plate_boxes,
+    _detect_plate_boxes_many,
     _encode_png,
     _preprocess_plate_crop,
     _ocr_plate_image_preferred,
@@ -57,35 +59,40 @@ TRACKER_MAX_AGE = 30
 
 
 def _detect_plate_boxes_any(frame):
-    """Detect plate boxes with the tuned detector, then the fast-alpr ONNX model.
+    """Detect all plate boxes with the tuned detector, then fast-alpr rescue.
 
-    The tuned platevision/license-plate chain is primary; the fast-alpr model
-    (65+ countries) only runs as a rescue when the primary finds nothing.
-    Returns a single best box ``[x1, y1, x2, y2]`` or None.
+    The tuned platevision/license-plate chain is primary; the fast-alpr ONNX
+    model (65+ countries) only runs as a rescue when the primary finds nothing,
+    and every one of its detections is kept. Returns a list of
+    ``[x1, y1, x2, y2]`` boxes (possibly empty).
     """
     model = get_plate_detector()
-    box = _detect_plate_boxes(model, frame)
-    if box is not None:
-        return box
+    boxes = _detect_plate_boxes_many(model, frame)
+    if boxes:
+        return boxes
     detector = get_fast_alpr()
     if detector is None:
-        return None
+        return []
     try:
         detections = detector.predict(frame)
     except Exception as exc:
         print(f'[WARN] fast-alpr prediction failed: {exc}')
-        return None
-    if not detections:
-        return None
-    best = max(detections, key=lambda d: d.confidence)
-    bb = best.bounding_box
-    x1, y1, x2, y2 = bb.x1, bb.y1, bb.x2, bb.y2
+        return []
+    if detections and isinstance(detections[0], (list, tuple)):
+        detections = detections[0]  # batched-call shape guard
     h, w = frame.shape[:2]
-    x1, y1 = max(0, int(x1)), max(0, int(y1))
-    x2, y2 = min(w, int(x2)), min(h, int(y2))
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return [x1, y1, x2, y2]
+    out = []
+    for det in detections:
+        try:
+            float(det.confidence)
+        except (AttributeError, TypeError):
+            continue
+        bb = det.bounding_box
+        x1, y1 = max(0, int(bb.x1)), max(0, int(bb.y1))
+        x2, y2 = min(w, int(bb.x2)), min(h, int(bb.y2))
+        if x2 > x1 and y2 > y1:
+            out.append([x1, y1, x2, y2])
+    return out
 
 
 def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
@@ -169,126 +176,121 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
                         pass
         # -----------------------
 
-        box = _detect_plate_boxes_any(frame)
-        if box is not None:
-            tracked = tracker.update([box])
-            tid = tracked[0][0]
-            for stale in tracker.expired_track_ids:
-                voter.forget(stale)
-                track_plate.pop(stale, None)
-                stable_confirm.pop(stale, None)
+        boxes = _detect_plate_boxes_any(frame)
+        tracked = tracker.update(boxes)
+        for stale in tracker.expired_track_ids:
+            voter.forget(stale)
+            track_plate.pop(stale, None)
+            stable_confirm.pop(stale, None)
 
+        for tid, box in tracked:
             x1, y1, x2, y2 = box
             h, w = frame.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
 
-            if x2 > x1 and y2 > y1:
-                plate_crop = frame[y1:y2, x1:x2]
-                processed_crop = _preprocess_plate_crop(plate_crop)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            plate_crop = frame[y1:y2, x1:x2]
+            processed_crop = _preprocess_plate_crop(plate_crop)
 
-                raw_text, _, char_conf = _ocr_plate_image_preferred(processed_crop)
-                if raw_text:
-                    plate_text = _clean_plate_text(raw_text)
-                    conf = float(0.0 if char_conf is None else _mean(char_conf))
+            raw_text, _, char_conf = _ocr_plate_image_preferred(processed_crop)
+            if not raw_text:
+                continue
+            plate_text = _clean_plate_text(raw_text)
+            conf = float(0.0 if char_conf is None else _mean(char_conf))
 
-                    # Low-res frames flake: single reads are unreliable. Only
-                    # reads that clear the floor are evidence; the voter turns
-                    # the accumulated majority into a confirmed text.
-                    if conf < CONFIDENCE_VOTE_READ_FLOOR:
-                        continue
-                    confirmed = voter.observe(tid, plate_text, conf)
-                    confirmed_text = None
-                    if confirmed is not None:
-                        cleaned_confirmed = _clean_plate_text(confirmed)
-                        if 6 <= len(cleaned_confirmed) <= 12:
-                            confirmed_text = cleaned_confirmed
+            # Low-res frames flake: single reads are unreliable. Only
+            # reads that clear the floor are evidence; the voter turns
+            # the accumulated majority into a confirmed text.
+            if conf < CONFIDENCE_VOTE_READ_FLOOR:
+                continue
+            confirmed = voter.observe(tid, plate_text, conf)
+            confirmed_text = None
+            if confirmed is not None:
+                cleaned_confirmed = _clean_plate_text(confirmed)
+                if 6 <= len(cleaned_confirmed) <= 12:
+                    confirmed_text = cleaned_confirmed
 
-                    if confirmed_text is not None:
-                        # Require the majority to hold steady across consecutive
-                        # frames -- the sliding re-vote briefly flips between
-                        # near-miss variants on low-res footage.
-                        prev, streak = stable_confirm.get(tid, (None, 0))
-                        if prev == confirmed_text:
-                            streak += 1
-                        else:
-                            streak = 1
-                        stable_confirm[tid] = (confirmed_text, streak)
-                        if streak >= STABLE_CONFIRM_READS:
-                            plate_text = confirmed_text
-                            conf = max(conf, CONFIDENCE_MIN_THRESHOLD)
-                        else:
-                            continue
-                    else:
-                        # No confirmed majority yet: the read stays inside the
-                        # voter and will surface once the track meets dwell.
-                        # Unconfirmed reads are never logged -- they are the
-                        # near-miss noise source this pipeline is built to suppress.
-                        continue
+            if confirmed_text is not None:
+                # Require the majority to hold steady across consecutive
+                # frames -- the sliding re-vote briefly flips between
+                # near-miss variants on low-res footage.
+                prev, streak = stable_confirm.get(tid, (None, 0))
+                if prev == confirmed_text:
+                    streak += 1
+                else:
+                    streak = 1
+                stable_confirm[tid] = (confirmed_text, streak)
+                if streak >= STABLE_CONFIRM_READS:
+                    plate_text = confirmed_text
+                    conf = max(conf, CONFIDENCE_MIN_THRESHOLD)
+                else:
+                    continue
+            else:
+                # No confirmed majority yet: the read stays inside the
+                # voter and will surface once the track meets dwell.
+                # Unconfirmed reads are never logged -- they are the
+                # near-miss noise source this pipeline is built to suppress.
+                continue
 
-                    # Filter noise: confidence >= 0.45 and alphanumeric length between 6-12 chars
-                    if conf >= CONFIDENCE_MIN_THRESHOLD and 6 <= len(plate_text) <= 12:
-                        last_ts = last_seen_ts.get(plate_text)
-                        # Emit on a new confirmed plate even mid-window as a
-                        # correction; otherwise obey the dedup window per text.
-                        is_correction = (
-                            track_plate.get(tid) is not None
-                            and track_plate[tid] != plate_text
-                        )
-                        if is_correction or last_ts is None or (frame_timestamp - last_ts) >= DEDUPLICATION_WINDOW_SECONDS:
-                            last_seen_ts[plate_text] = frame_timestamp
-                            track_plate[tid] = plate_text
+            # Filter noise: confidence >= 0.45 and alphanumeric length between 6-12 chars
+            if conf >= CONFIDENCE_MIN_THRESHOLD and 6 <= len(plate_text) <= 12:
+                last_ts = last_seen_ts.get(plate_text)
+                # Emit on a new confirmed plate even mid-window as a
+                # correction; otherwise obey the dedup window per text.
+                is_correction = (
+                    track_plate.get(tid) is not None
+                    and track_plate[tid] != plate_text
+                )
+                if is_correction or last_ts is None or (frame_timestamp - last_ts) >= DEDUPLICATION_WINDOW_SECONDS:
+                    last_seen_ts[plate_text] = frame_timestamp
+                    track_plate[tid] = plate_text
 
-                            crop_bytes = _encode_png(processed_crop)
-                            crop_path = save_crop(camera.camera_id, plate_text, crop_bytes)
+                    crop_bytes = _encode_png(processed_crop)
+                    crop_path = save_crop(camera.camera_id, plate_text, crop_bytes)
 
-                            base_time = video_feed.uploaded_at or timezone.now()
-                            captured_at = base_time + timedelta(seconds=frame_timestamp)
+                    base_time = video_feed.uploaded_at or timezone.now()
+                    captured_at = base_time + timedelta(seconds=frame_timestamp)
 
-                            log = DetectionLog.objects.create(
-                                camera=camera,
-                                video_feed=video_feed,
-                                license_plate=plate_text,
-                                confidence_score=conf,
-                                frame_timestamp=frame_timestamp,
-                                captured_at=captured_at,
-                                crop_image_path=crop_path,
-                            )
-                            detections_created += 1
+                    log = DetectionLog.objects.create(
+                        camera=camera,
+                        video_feed=video_feed,
+                        license_plate=plate_text,
+                        confidence_score=conf,
+                        frame_timestamp=frame_timestamp,
+                        captured_at=captured_at,
+                        crop_image_path=crop_path,
+                    )
+                    detections_created += 1
 
-                            blacklisted = BlacklistedVehicle.objects.filter(
-                                license_plate__iexact=plate_text,
-                                is_active=True,
-                            ).first()
+                    blacklisted = BlacklistedVehicle.objects.filter(
+                        license_plate__iexact=plate_text,
+                        is_active=True,
+                    ).first()
 
-                            if blacklisted:
-                                alerts_triggered += 1
-                                if channel_layer:
-                                    payload = {
-                                        'type': 'send_alert_notification',
-                                        'alert_level': blacklisted.alert_level,
-                                        'plate': plate_text,
-                                        'owner': blacklisted.owner_name,
-                                        'reason': blacklisted.reason,
-                                        'camera': camera.location_name,
-                                        'coordinates': [camera.location.x, camera.location.y],
-                                        'timestamp': str(log.captured_at),
-                                        'frame_timestamp': frame_timestamp,
-                                        'video_feed_id': video_feed.id,
-                                    }
-                                    try:
-                                        async_to_sync(channel_layer.group_send)(
-                                            'surveillance_alerts',
-                                            payload,
-                                        )
-                                    except Exception:
-                                        pass
-        else:
-            tracker.update([])
-            for stale in tracker.expired_track_ids:
-                voter.forget(stale)
-                track_plate.pop(stale, None)
-                stable_confirm.pop(stale, None)
+                    if blacklisted:
+                        alerts_triggered += 1
+                        if channel_layer:
+                            payload = {
+                                'type': 'send_alert_notification',
+                                'alert_level': blacklisted.alert_level,
+                                'plate': plate_text,
+                                'owner': blacklisted.owner_name,
+                                'reason': blacklisted.reason,
+                                'camera': camera.location_name,
+                                'coordinates': [camera.location.x, camera.location.y],
+                                'timestamp': str(log.captured_at),
+                                'frame_timestamp': frame_timestamp,
+                                'video_feed_id': video_feed.id,
+                            }
+                            try:
+                                async_to_sync(channel_layer.group_send)(
+                                    'surveillance_alerts',
+                                    payload,
+                                )
+                            except Exception:
+                                pass
 
     cap.release()
 
