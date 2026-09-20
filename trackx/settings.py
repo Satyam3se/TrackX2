@@ -21,17 +21,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-^_%nadu!!9cec(qkpgb5x%$)fgerp5z5)fk)j^r!xy#+gew*i#'
+# Read from the environment (docker-compose sets DJANGO_SECRET_KEY); the
+# hardcoded fallback is a dev-only dummy that must never run in production.
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-dev-only-key-do-not-use-in-production',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# Defaults to True for local dev; Vercel sets VERCEL=1 so we turn it off there.
-DEBUG = os.environ.get('VERCEL') != '1'
+# Defaults to True for local dev; Vercel sets VERCEL=1 and docker-compose sets
+# DJANGO_DEBUG=0 to turn it off there.
+DEBUG = os.environ.get('VERCEL') != '1' and os.environ.get('DJANGO_DEBUG', '1') == '1'
 
 ALLOWED_HOSTS = ['*']
 
 CSRF_TRUSTED_ORIGINS = [
-    'https://*.vusercontent.net',
-    'https://*.v0.dev',
     'https://*.vercel.app',
     'http://localhost:3000',
 ]
@@ -119,7 +123,7 @@ DATABASES = {
         'ENGINE': 'django.contrib.gis.db.backends.postgis',
         'NAME': os.environ.get('POSTGRES_DB', 'trackx_db'),
         'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'satyam3s'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
         'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
         'PORT': os.environ.get('POSTGRES_PORT', '5432'),
     }

@@ -194,11 +194,16 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
             plate_crop = frame[y1:y2, x1:x2]
             processed_crop = _preprocess_plate_crop(plate_crop)
 
-            raw_text, _, char_conf = _ocr_plate_image_preferred(processed_crop)
+            raw_text, ocr_conf, char_conf = _ocr_plate_image_preferred(processed_crop)
             if not raw_text:
                 continue
             plate_text = _clean_plate_text(raw_text)
-            conf = float(0.0 if char_conf is None else _mean(char_conf))
+            if char_conf is not None:
+                conf = float(_mean(char_conf))
+            else:
+                # EasyOCR fallback path (fast-plate-ocr unavailable or empty):
+                # keep the recognizer's own confidence so reads stay votable.
+                conf = float(ocr_conf) if ocr_conf else 0.0
 
             # Low-res frames flake: single reads are unreliable. Only
             # reads that clear the floor are evidence; the voter turns
