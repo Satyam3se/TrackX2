@@ -7,7 +7,12 @@ __v0_jsx-dev-runtime.ts
 .vercel/
 
 # Environment variables
+.env
 .env*.local
+
+# Local test media (too large for git)
+testing_dataset/
+testingmodelvideos/
 
 # Common ignores
 node_modules
