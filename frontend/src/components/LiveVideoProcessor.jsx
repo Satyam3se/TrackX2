@@ -10,7 +10,7 @@ export default function LiveVideoProcessor() {
   const [wsConnected, setWsConnected] = useState(false);
   const [plateInfo, setPlateInfo] = useState(null);
   const [videoSize, setVideoSize] = useState(800);
-  // Removed unused processing state
+  const isProcessingRef = useRef(false);
   const wsRef = useRef(null);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef(null);
@@ -36,18 +36,14 @@ export default function LiveVideoProcessor() {
         return;
       }
 
-      // We got bounding box data, let's draw it immediately on the canvas!
+      // We got bounding box data or empty data, meaning the backend finished processing the frame
+      isProcessingRef.current = false;
+
       const canvas = canvasRef.current;
       const video = videoRef.current;
       if (!canvas || !video) {
         return;
       }
-      if (!data.bbox) {
-        // No detection in this frame; skip drawing.
-        return;
-      }
-      // Continue to drawing below
-
 
       const ctx = canvas.getContext('2d');
       // Set canvas size to match video dimensions
@@ -57,41 +53,64 @@ export default function LiveVideoProcessor() {
       // Clear previous drawings
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw Bounding Box
-      // The backend returns coordinates relative to the downscaled frame.
-      // We must scale them back up to the original video dimensions.
       const scale = data.scale || 1;
-      const x1 = data.bbox[0] / scale;
-      const y1 = data.bbox[1] / scale;
-      const x2 = data.bbox[2] / scale;
-      const y2 = data.bbox[3] / scale;
-      const width = x2 - x1;
-      const height = y2 - y1;
 
-      ctx.strokeStyle = '#00ffcc'; // Cyberpunk cyan!
-      ctx.lineWidth = 4;
-      ctx.strokeRect(x1, y1, width, height);
+      // 1. Draw all detected CARS first (Cyberpunk cyan-blue dashed box)
+      const cars = data.all_cars || (data.car_bbox ? [data.car_bbox] : []);
+      if (cars.length > 0) {
+        cars.forEach((cbox, idx) => {
+          const cx1 = cbox[0] / scale;
+          const cy1 = cbox[1] / scale;
+          const cx2 = cbox[2] / scale;
+          const cy2 = cbox[3] / scale;
+          const cw = cx2 - cx1;
+          const ch = cy2 - cy1;
 
-      // The backend may have settled on a confirmed (temporal-voted) plate;
-      // prefer it over the noisy single-frame read.
-      const label = data.confirmed || data.plate_text;
+          ctx.strokeStyle = 'rgba(0, 195, 255, 0.85)';
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([8, 4]);
+          ctx.strokeRect(cx1, cy1, cw, ch);
+          ctx.setLineDash([]);
 
-      // Draw Plate Text if we found one
-      if (label) {
-        const isConfirmed = Boolean(data.confirmed);
-        ctx.fillStyle = isConfirmed ? 'rgba(0, 255, 204, 0.9)' : 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(x1, y1 - 40, width, 40);
+          // Vehicle badge
+          ctx.fillStyle = 'rgba(0, 195, 255, 0.9)';
+          ctx.fillRect(cx1, Math.max(0, cy1 - 24), 70, 24);
+          ctx.fillStyle = '#060d1d';
+          ctx.font = 'bold 12px "JetBrains Mono", monospace';
+          ctx.fillText(`CAR #${idx + 1}`, cx1 + 6, Math.max(16, cy1 - 7));
+        });
+      }
 
-        ctx.fillStyle = isConfirmed ? '#0b0f19' : '#00ffcc';
-        ctx.font = '24px "JetBrains Mono", monospace';
-        ctx.fillText(
-          `${label}${isConfirmed ? ' ✓' : ''} (${(data.confidence * 100).toFixed(1)}%)`,
-          x1 + 5,
-          y1 - 10
-        );
+      // 2. Draw detected plates on cars (Glowing neon-green / cyan box)
+      if (data.bbox) {
+        const x1 = data.bbox[0] / scale;
+        const y1 = data.bbox[1] / scale;
+        const x2 = data.bbox[2] / scale;
+        const y2 = data.bbox[3] / scale;
+        const width = x2 - x1;
+        const height = y2 - y1;
 
-        // Update UI plate info state
-        setPlateInfo(`${label} (${(data.confidence * 100).toFixed(1)}%)`);
+        ctx.strokeStyle = '#00ffcc';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x1, y1, width, height);
+
+        const label = data.confirmed || data.plate_text;
+        if (label) {
+          const isConfirmed = Boolean(data.confirmed);
+          const badgeWidth = Math.max(width, 180);
+          ctx.fillStyle = isConfirmed ? 'rgba(0, 255, 204, 0.95)' : 'rgba(0, 0, 0, 0.85)';
+          ctx.fillRect(x1, Math.max(0, y1 - 34), badgeWidth, 34);
+
+          ctx.fillStyle = isConfirmed ? '#0b0f19' : '#00ffcc';
+          ctx.font = 'bold 18px "JetBrains Mono", monospace';
+          ctx.fillText(
+            `${label}${isConfirmed ? ' ✓' : ''} (${(data.confidence * 100).toFixed(0)}%)`,
+            x1 + 6,
+            Math.max(22, y1 - 10)
+          );
+
+          setPlateInfo(`${label} (${(data.confidence * 100).toFixed(1)}%)`);
+        }
       }
 
       // Frame progression is handled by requestAnimationFrame loop; no manual timeout needed
@@ -118,17 +137,13 @@ export default function LiveVideoProcessor() {
     };
   }, [connect]);
 
-  // Replace setTimeout loop with requestAnimationFrame for smoother processing
+  // Use a fixed interval (e.g. 300ms = ~3.3 fps) to avoid overwhelming the backend
   useEffect(() => {
     if (!isPlaying) return;
-    const loop = () => {
+    const interval = setInterval(() => {
       processFrame();
-      animationRef.current = requestAnimationFrame(loop);
-    };
-    animationRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    };
+    }, 300);
+    return () => clearInterval(interval);
   }, [isPlaying]);
 
   const handleFileChange = (e) => {
@@ -144,7 +159,12 @@ export default function LiveVideoProcessor() {
     const video = videoRef.current;
     const ws = wsRef.current;
 
+    if (isProcessingRef.current) {
+      return; // Wait for the previous frame to finish!
+    }
+
     if (video && !video.paused && !video.ended && ws && ws.readyState === WebSocket.OPEN) {
+      isProcessingRef.current = true;
       // Create a temporary hidden canvas to extract the image data
       // Downscale to max 640 width to drastically speed up CPU YOLO inference
       const MAX_WIDTH = 640;
@@ -181,42 +201,84 @@ export default function LiveVideoProcessor() {
   };
 
   return (
-    <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', background: '#0b0f19', color: '#e1e5ee', fontFamily: 'Inter, sans-serif' }}>
-      <h1>Live Video ANPR Processing</h1>
-
-      {!wsConnected && (
-        <div style={{ color: '#ff4d4d', background: 'rgba(255, 77, 77, 0.1)', padding: '1rem', borderRadius: '8px' }}>
-          Backend WebSocket Disconnected. Is the Django server running?
+    <div className="card" style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+      <div className="card-head" style={{ width: '100%' }}>
+        <div className="card-title">
+          <span className="bar"></span>
+          Live Video ANPR Processing
         </div>
-      )}
+        {!wsConnected && (
+          <span className="card-sub" style={{ background: 'rgba(255,23,68,0.1)', color: 'var(--neon-red)', borderColor: 'rgba(255,23,68,0.3)' }}>
+            DISCONNECTED
+          </span>
+        )}
+      </div>
 
-      <div style={{
+      <div className="glass-panel" style={{
         width: '100%',
-        maxWidth: '800px',
         display: 'flex',
-        gap: '1rem',
-        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: '16px',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        position: 'sticky',
-        top: '1rem',
-        zIndex: 10,
-        background: 'rgba(11, 15, 25, 0.9)',
-        backdropFilter: 'blur(10px)',
-        padding: '1rem',
-        borderRadius: '8px',
-        boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
+        padding: '16px 20px',
       }}>
-        <input
-          type="file"
-          accept="video/*"
-          onChange={handleFileChange}
-          style={{ padding: '0.5rem', background: '#1a2235', border: '1px solid #2a3553', borderRadius: '4px', color: 'white' }}
-        />
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <label style={{ fontSize: '0.9rem', color: '#8a9ab8' }}>Screen Size:</label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: '280px' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--neon-cyan)', letterSpacing: '1px' }}>
+              PIPELINE: 🚗 CARS FIRST → 🪪 PLATES
+            </span>
+          </div>
+          <input
+            type="file"
+            accept="video/*"
+            onChange={handleFileChange}
+            className="vf-file"
+            style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px dashed var(--glass-border)' }}
+          />
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', alignSelf: 'center' }}>Test Videos:</span>
+            <button
+              type="button"
+              className="glass-btn"
+              style={{ fontSize: '11px', padding: '4px 10px' }}
+              onClick={() => {
+                setVideoFile('/sample_videos/demo_recording.mp4');
+                setIsPlaying(false);
+              }}
+            >
+              📹 Recording 2026-09-10
+            </button>
+            <button
+              type="button"
+              className="glass-btn"
+              style={{ fontSize: '11px', padding: '4px 10px' }}
+              onClick={() => {
+                setVideoFile('/sample_videos/demo_anpr.mp4');
+                setIsPlaying(false);
+              }}
+            >
+              📹 ANPR Video 1
+            </button>
+            <button
+              type="button"
+              className="glass-btn"
+              style={{ fontSize: '11px', padding: '4px 10px' }}
+              onClick={() => {
+                setVideoFile('/sample_videos/demo_traffic.mp4');
+                setIsPlaying(false);
+              }}
+            >
+              📹 Traffic 1080p
+            </button>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Screen Size</label>
           <button
             onClick={() => setVideoSize(Math.max(400, Number(videoSize) - 50))}
-            style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            className="icon-btn"
+            style={{ width: '28px', height: '28px', borderRadius: '6px' }}
           >-</button>
           <input
             type="range"
@@ -225,35 +287,36 @@ export default function LiveVideoProcessor() {
             step="50"
             value={videoSize}
             onChange={(e) => setVideoSize(Number(e.target.value))}
-            style={{ cursor: 'pointer' }}
+            style={{ cursor: 'pointer', accentColor: 'var(--neon-cyan)' }}
           />
           <button
             onClick={() => setVideoSize(Math.min(1200, Number(videoSize) + 50))}
-            style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            className="icon-btn"
+            style={{ width: '28px', height: '28px', borderRadius: '6px' }}
           >+</button>
-          <button
-            onClick={() => document.getElementById('live-video-scroller').scrollBy({ top: 300, behavior: 'smooth' })}
-            style={{ background: '#2a3553', color: 'white', border: 'none', borderRadius: '4px', width: '24px', height: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: '0.5rem' }}
-            title="Scroll Down"
-          >↓</button>
         </div>
         {videoFile && (
           <button
             onClick={togglePlay}
-            style={{ padding: '0.5rem 1rem', background: isPlaying ? '#ff4d4d' : '#00ffcc', color: '#0b0f19', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}
+            className={`glass-btn ${isPlaying ? 'active' : ''}`}
+            style={{ 
+              background: isPlaying ? 'rgba(255,23,68,0.1)' : 'rgba(0,230,118,0.1)',
+              color: isPlaying ? 'var(--neon-red)' : 'var(--neon-green)',
+              borderColor: isPlaying ? 'var(--neon-red)' : 'var(--neon-green)'
+            }}
           >
-            {isPlaying ? 'Pause' : 'Start Live Processing'}
+            {isPlaying ? 'PAUSE FEED' : 'START PROCESSING'}
           </button>
         )}
       </div>
 
-      <div style={{ position: 'relative', width: '100%', maxWidth: `${videoSize}px`, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,255,204,0.1)', transition: 'max-width 0.3s ease' }}>
+      <div style={{ position: 'relative', width: '100%', maxWidth: `${videoSize}px`, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 40px rgba(0, 229, 255, 0.1)', border: '1px solid var(--glass-border)' }}>
         {videoFile ? (
           <>
             <video
               ref={videoRef}
               src={videoFile}
-              style={{ width: '100%', display: 'block' }}
+              style={{ width: '100%', display: 'block', background: '#000' }}
               controls={false}
               muted
               onEnded={() => setIsPlaying(false)}
@@ -265,45 +328,57 @@ export default function LiveVideoProcessor() {
             />
           </>
         ) : (
-          <div style={{ width: '100%', aspectRatio: '16/9', background: '#1a2235', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6a7a9c' }}>
-            Select a video file to begin
+          <div style={{ width: '100%', aspectRatio: '16/9', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', border: '1px dashed var(--glass-border)', borderRadius: '12px' }}>
+            <div style={{ textAlign: 'center' }}>
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" style={{ opacity: 0.5, marginBottom: '10px' }}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <br/>
+              Select a video file to engage ANPR
+            </div>
           </div>
         )}
-        {/* Display latest detected plate in a dedicated box */}
+      </div>
+
+      {/* Display latest detected plate in a dedicated box */}
+      <div className="glass-panel" style={{
+        marginTop: '10px',
+        width: '100%',
+        padding: '24px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        background: plateInfo ? 'rgba(0, 229, 255, 0.05)' : 'rgba(10, 17, 40, 0.5)',
+        borderColor: plateInfo ? 'var(--neon-cyan)' : 'var(--glass-border)',
+        boxShadow: plateInfo ? '0 0 30px rgba(0,229,255,0.15)' : 'none',
+        transition: 'all 0.3s ease'
+      }}>
+        <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-muted)', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '2px', fontWeight: 700 }}>
+          Live Target Acquisition
+        </h3>
         <div style={{
-          marginTop: '1.5rem',
-          width: '100%',
-          padding: '1.5rem',
-          background: 'rgba(11, 15, 25, 0.8)',
-          border: '2px solid #2a3553',
-          borderRadius: '8px',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
+          padding: '16px 32px',
+          minWidth: '350px',
+          textAlign: 'center',
         }}>
-          <h3 style={{ margin: '0 0 1rem 0', color: '#8a9ab8', fontSize: '1rem', textTransform: 'uppercase', letterSpacing: '2px' }}>
-            Detected License Plate
-          </h3>
-          <div style={{
-            background: plateInfo ? 'rgba(0, 255, 204, 0.1)' : '#1a2235',
-            border: plateInfo ? '2px solid #00ffcc' : '2px dashed #2a3553',
-            borderRadius: '8px',
-            padding: '1rem 2rem',
-            minWidth: '300px',
-            textAlign: 'center',
-            transition: 'all 0.3s ease'
-          }}>
-            {plateInfo ? (
-              <span style={{ color: '#00ffcc', fontFamily: '"JetBrains Mono", monospace', fontSize: '2rem', fontWeight: 'bold' }}>
-                {plateInfo}
-              </span>
-            ) : (
-              <span style={{ color: '#6a7a9c', fontStyle: 'italic', fontSize: '1.2rem' }}>
-                Scanning for plates...
-              </span>
-            )}
-          </div>
+          {plateInfo ? (
+            <span style={{ 
+              color: 'var(--neon-cyan)', 
+              fontFamily: '"JetBrains Mono", monospace', 
+              fontSize: '32px', 
+              fontWeight: 800,
+              textShadow: '0 0 20px var(--neon-cyan-glow)',
+              letterSpacing: '3px'
+            }}>
+              {plateInfo}
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '14px', letterSpacing: '1px' }}>
+              Awaiting plate signature...
+            </span>
+          )}
         </div>
       </div>
     </div>

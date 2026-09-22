@@ -8,8 +8,12 @@ const BACKEND = process.env.VITE_DEV_BACKEND ?? 'http://localhost:8000';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
-    strictPort: false,
+    port: 3000,
+    host: true,
+    strictPort: true,
+    watch: {
+      ignored: ['**/public/sample_videos/**', '**/*.mp4', '**/*.mov'],
+    },
     proxy: {
       '/api': { target: BACKEND, changeOrigin: true },
       '/ws': { target: BACKEND.replace(/^http/, 'ws'), ws: true },

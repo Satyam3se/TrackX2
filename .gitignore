@@ -30,3 +30,7 @@ web_logs.txt
 kaggle_dataset/
 lp_dataset2/
 pretrained_weights/
+
+# Local test videos
+testing_dataset/
+testingmodelvideos/

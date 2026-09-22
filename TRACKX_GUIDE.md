@@ -20,6 +20,7 @@ TrackX is built on a modern, distributed architecture designed for scalability a
 
 ### 🎨 Frontend (The Command Center)
 - **React.js:** A high-performance UI framework for the real-time dashboard.
+- **Cyberpunk Neon UI:** Features a custom CSS design system using glassmorphism, glowing hover effects, and responsive HUD elements.
 - **MapLibre GL / OpenStreetMap:** Provides an interactive map for visualizing camera nodes, vehicle trajectories, and traffic heatmaps.
 - **Vite:** A lightning-fast build tool and development server.
 
@@ -84,12 +85,18 @@ Log into `http://localhost:3000/admin/` to:
 1. **Real-time Monitoring:** Watch the **Anomaly Feed**. When a blacklisted car is spotted, a toast notification appears. Click **PIN TO MAP** to instantly zoom into that camera's location.
 2. **Vehicle Tracking:** Enter a license plate in the search bar. The map will draw a **Cyan Trajectory Line** showing everywhere that vehicle has been seen, along with a timeline of detections.
 3. **City Analytics:** Check the right sidebar for average city speed and total detection counts to monitor urban traffic flow.
+4. **Live Video Upload:** Switch to the "Live Video Upload" tab in the navigation bar. You can upload any local video (e.g., from the `Videos` folder), and the system will stream the frames via WebSockets to the backend, drawing glowing cyan bounding boxes around detected plates in real-time!
 
 ### C. Testing the System (Developer Tools)
-Use the built-in management commands to simulate a live environment:
+Use the built-in scripts to simulate live environments or test your trained models:
 ```bash
-# Run a full end-to-end demo (Seeds data & triggers alerts)
+# 1. Run a full end-to-end demo (Seeds data & triggers alerts via WebSockets)
 docker compose exec web python manage.py run_teacher_demo
+
+# 2. Test direct inference on a local video file WITHOUT needing the database
+# This script reads `Videos/WhatsApp Video 2026-09-12 at 21.55.08.mp4` frame-by-frame 
+# and prints detected license plates directly to the console.
+python test_inference_direct.py
 ```
 
 ---
@@ -132,14 +139,14 @@ npm run dev
 Now open **http://localhost:5173** — the SPA, API, WebSockets, and Admin all work through one port thanks to the Vite proxy. The backend must be reachable at `http://localhost:8000` (set `VITE_DEV_BACKEND` in `frontend/.env` if different).
 
 ### Trained Models in Development
-Your trained YOLO weights are automatically discovered by the detector chain:
+Your trained YOLO weights are automatically discovered by the detector chain in `vision.py`. The backend will **explicitly log** which model it loaded when the server starts (e.g., `[TRACKX] Auto-detected YOLO weights from DETECTOR_CHAIN: ...`). The order of preference is:
 1. `pretrained_weights/platevision_plate_detector.pt` (tuned plate detector)
 2. `license_plate_detector.pt` (TrackX Indian-plate fine-tune)
 3. `runs/detect/license_plate_model-3/weights/best.pt`
 4. `runs/detect/runs/detect/lp_quick/weights/best.pt`
 5. Falls back to base `yolov8n.pt`
 
-The active weights are reported by the diagnostic command:
+The active weights are also reported by the diagnostic command:
 ```bash
 python manage.py verify_full_stack
 ```

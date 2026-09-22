@@ -13,6 +13,8 @@ from functools import lru_cache
 import cv2
 import numpy as np
 
+from .tracking import iou
+
 DETECTION_CONF_THRESHOLD = 0.1
 #: Plate-geometry sanity bounds. Real (Indian) plates are wide rectangles;
 #: full-frame squares & speck-sized boxes are detector false positives that
@@ -135,10 +137,13 @@ def get_plate_detector():
     """
     env_weights = os.environ.get('YOLO_WEIGHTS')
     if env_weights:
+        print(f"[TRACKX] Explicitly loading YOLO weights from ENV: {env_weights}")
         return get_yolo_model(env_weights)
     for path in DETECTOR_CHAIN:
         if os.path.isfile(path):
+            print(f"[TRACKX] Auto-detected YOLO weights from DETECTOR_CHAIN: {path}")
             return get_yolo_model(path)
+    print(f"[TRACKX] Falling back to default YOLO weights: yolov8n.pt")
     return get_yolo_model(None)
 
 
@@ -269,31 +274,53 @@ def _check_decoded_size(img):
         )
 
 
-def _detect_plate_boxes(model, image_bgr):
-    """Run YOLO and return the best plate bbox ``[x1, y1, x2, y2]`` or None.
+def _detect_vehicles(image_bgr, conf_threshold=0.25):
+    """Detect vehicles (cars, trucks, buses, motorcycles) in the frame.
 
-    Prefers boxes predicted as a license-plate class when the model exposes
-    such a class name; otherwise falls back to the highest-confidence box.
-
-    A plate-geometry sanity filter rejects full-frame squares and tiny specks
-    that some detectors emit when no plate is actually in frame -- feeding
-    those to OCR wastes many seconds per frame and yields garbage text.
+    Returns a list of vehicle bounding boxes: ``[[x1, y1, x2, y2], ...]``.
     """
-    boxes = _detect_plate_boxes_many(model, image_bgr)
-    return boxes[0] if boxes else None
-
-
-def _detect_plate_boxes_many(model, image_bgr):
-    """Return *all* geometry-valid plate bboxes ``[[x1, y1, x2, y2], ...]``.
-
-    Same candidate selection and sanity filter as ``_detect_plate_boxes`` but
-    keeps every passing box instead of collapsing to the best one, so a frame
-    with several vehicles gets one track + OCR pass per plate (the
-    anpr-pipeline reference detects and reads every plate per frame). Sorted
-    by confidence, highest first.
-    """
+    if image_bgr is None or image_bgr.size == 0:
+        return []
+    model = get_yolo_model(None)
     results = model.predict(
-        source=image_bgr,
+        source=image_bgr, conf=conf_threshold, verbose=False,
+    )
+    if not results:
+        return []
+    boxes = results[0].boxes
+    if boxes is None or len(boxes) == 0:
+        return []
+    names = getattr(model, 'names', None) or {}
+    vehicle_classes = {
+        cls_id for cls_id, name in names.items()
+        if str(name).lower() in {'car', 'truck', 'bus', 'motorcycle', 'motorbike', 'auto'}
+    }
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy() if boxes.conf is not None else None
+    cls_npy = boxes.cls.cpu().numpy() if boxes.cls is not None else None
+    h, w = image_bgr.shape[:2]
+    vehicles = []
+    for i in range(len(xyxy)):
+        if cls_npy is not None and vehicle_classes and int(cls_npy[i]) not in vehicle_classes:
+            continue
+        x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy[i]]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if (x2 - x1) < 20 or (y2 - y1) < 20:
+            continue
+        conf = float(confs[i]) if confs is not None else 1.0
+        vehicles.append(([x1, y1, x2, y2], conf))
+    # Sort largest/most confident first
+    vehicles.sort(key=lambda v: (v[0][2] - v[0][0]) * (v[0][3] - v[0][1]) * v[1], reverse=True)
+    return [v[0] for v in vehicles]
+
+
+def _detect_plates_raw(model, crop_bgr):
+    """Run plate YOLO detector directly on a crop (vehicle ROI or isolated plate)."""
+    if crop_bgr is None or crop_bgr.size == 0:
+        return []
+    results = model.predict(
+        source=crop_bgr,
         conf=DETECTION_CONF_THRESHOLD,
         verbose=False,
     )
@@ -325,27 +352,131 @@ def _detect_plate_boxes_many(model, image_bgr):
         if plate_ids:
             candidate_ids = plate_ids
 
-    h, w = image_bgr.shape[:2]
-    frame_area = float(max(h * w, 1))
+    h, w = crop_bgr.shape[:2]
+    crop_area = float(max(h * w, 1))
     valid = []
     for i in candidate_ids:
         x1, y1, x2, y2 = xyxy[i]
         bw = float(x2 - x1)
         bh = float(y2 - y1)
         if bw < 15 or bh < 8 or bh <= 0:
-            continue  # too tiny to OCR meaningfully
+            continue
         aspect = bw / bh
-        area_frac = (bw * bh) / frame_area
+        area_frac = (bw * bh) / crop_area
         if aspect < PLATE_MIN_ASPECT or aspect > PLATE_MAX_ASPECT:
             continue
-        if area_frac > PLATE_MAX_AREA_FRACTION:
-            continue  # full-frame false positive
+        if area_frac > 0.4:
+            continue
         valid.append(
             ([int(round(float(v))) for v in xyxy[i]], float(confs[i]))
         )
 
     valid.sort(key=lambda item: item[1], reverse=True)
-    return [box for box, _ in valid]
+    return valid
+
+
+def _find_contour_in_vehicle_crop(vehicle_crop):
+    """Search for plate-shaped edge blobs in a vehicle crop."""
+    if vehicle_crop is None or vehicle_crop.size == 0:
+        return None
+    candidates = _find_contour_candidates(vehicle_crop, lower_half_only=True)
+    if not candidates:
+        candidates = _find_contour_candidates(vehicle_crop, lower_half_only=False)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _detect_plate_boxes(model, image_bgr, vehicles=None):
+    """Run YOLO and return the best plate bbox ``[x1, y1, x2, y2]`` or None."""
+    boxes = _detect_plate_boxes_many(model, image_bgr, vehicles=vehicles)
+    return boxes[0] if boxes else None
+
+
+def _detect_plate_boxes_many(model, image_bgr, vehicles=None):
+    """Return *all* geometry-valid plate bboxes located on detected vehicles.
+
+    First detects vehicles (car, truck, bus, motorcycle) in the frame, then
+    detects license plates within each vehicle crop. This two-stage pipeline
+    eliminates false-positive detections on background objects (trees, signs,
+    buildings, pedestrians) and dramatically improves recognition on smaller
+    or distant vehicles by preserving plate resolution in the crop.
+
+    Returns ``[[x1, y1, x2, y2], ...]`` sorted by detection confidence.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return []
+    h, w = image_bgr.shape[:2]
+
+    # Stage 1: Vehicle detection
+    if vehicles is None:
+        vehicles = _detect_vehicles(image_bgr)
+
+    valid_plates = []
+
+    # Stage 2: Plate detection inside each detected vehicle
+    if vehicles:
+        for vx1, vy1, vx2, vy2 in vehicles:
+            vw = vx2 - vx1
+            vh = vy2 - vy1
+            if vw < 20 or vh < 20:
+                continue
+            # Add small 4% padding around vehicle to prevent clipping bumper plates
+            px = max(4, int(vw * 0.04))
+            py = max(4, int(vh * 0.04))
+            cx1 = max(0, vx1 - px)
+            cy1 = max(0, vy1 - py)
+            cx2 = min(w, vx2 + px)
+            cy2 = min(h, vy2 + py)
+            if cx2 <= cx1 or cy2 <= cy1:
+                continue
+            vcrop = image_bgr[cy1:cy2, cx1:cx2]
+
+            # Run plate detector on vehicle crop
+            p_boxes = _detect_plates_raw(model, vcrop)
+            for pbox, pconf in p_boxes:
+                rx1, ry1, rx2, ry2 = pbox
+                gx1 = cx1 + rx1
+                gy1 = cy1 + ry1
+                gx2 = cx1 + rx2
+                gy2 = cy1 + ry2
+                valid_plates.append(([gx1, gy1, gx2, gy2], pconf))
+
+            # If model didn't detect plate in this vehicle and contour fallback is on:
+            if not p_boxes and CONTOUR_FALLBACK:
+                cbox = _find_contour_in_vehicle_crop(vcrop)
+                if cbox is not None:
+                    rx1, ry1, rx2, ry2 = cbox
+                    c_conf = _estimate_contour_confidence(cbox, vcrop.shape[:2])
+                    if c_conf >= CONTOUR_CONF_THRESHOLD:
+                        valid_plates.append(([cx1 + rx1, cy1 + ry1, cx1 + rx2, cy1 + ry2], c_conf))
+
+    else:
+        # Fallback: if no vehicles were detected in the frame:
+        # If the image itself is already a small/tight plate crop (e.g. uploaded plate photo),
+        # allow direct plate detection on the image. Full scene frames with no vehicles
+        # yield 0 plates, cleanly suppressing false positives on non-car objects.
+        aspect = float(w) / max(float(h), 1.0)
+        is_isolated_plate = (w < 800 and h < 500 and 1.5 <= aspect <= 7.0)
+        if is_isolated_plate:
+            p_boxes = _detect_plates_raw(model, image_bgr)
+            for pbox, pconf in p_boxes:
+                valid_plates.append((pbox, pconf))
+
+    # Deduplicate overlapping plate boxes
+    deduped = []
+    valid_plates.sort(key=lambda item: item[1], reverse=True)
+    for box, conf in valid_plates:
+        overlap = False
+        for abox, _ in deduped:
+            if iou(box, abox) > 0.4:
+                overlap = True
+                break
+        if not overlap:
+            deduped.append((box, conf))
+
+    return [item[0] for item in deduped]
 
 
 def _detect_plate_with_contours(image_bgr):
@@ -379,17 +510,12 @@ def _detect_plate_with_contours(image_bgr):
         return None
     vehicle_crop = image_bgr[cy1:cy2, cx1:cx2]
 
-    candidates = _find_contour_candidates(vehicle_crop, lower_half_only=True)
-    if not candidates:
-        candidates = _find_contour_candidates(vehicle_crop, lower_half_only=False)
-    if not candidates:
+    cbox = _find_contour_in_vehicle_crop(vehicle_crop)
+    if cbox is None:
         return None
+    rx1, ry1, rx2, ry2 = cbox
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, bbox = candidates[0]
-    rx1, ry1, rx2, ry2 = bbox
-
-    confidence = _estimate_contour_confidence(bbox, vehicle_crop.shape[:2])
+    confidence = _estimate_contour_confidence(cbox, vehicle_crop.shape[:2])
     if confidence < CONTOUR_CONF_THRESHOLD:
         return None
 
@@ -401,45 +527,9 @@ def _detect_plate_with_contours(image_bgr):
 
 
 def _detect_vehicle_bbox(image_bgr, conf_threshold=0.35):
-    """Return a COCO vehicle bounding box ``[x1, y1, x2, y2]`` or None.
-
-    Uses the base COCO model (``get_yolo_model(None)`` -> yolov8n.pt) and
-    keeps car/bus/truck/auto/motorcycle classes. Vehicles sit lower in the
-    frame, so among confident detections we prefer the one whose bottom is
-    closest to the frame bottom (that is where a plate can be OCR'd).
-    """
-    model = get_yolo_model(None)
-    results = model.predict(
-        source=image_bgr, conf=conf_threshold, verbose=False,
-    )
-    if not results:
-        return None
-    boxes = results[0].boxes
-    if boxes is None or len(boxes) == 0:
-        return None
-    names = getattr(model, 'names', None) or {}
-    vehicle_classes = {
-        cls_id for cls_id, name in names.items()
-        if str(name).lower() in {'car', 'truck', 'bus', 'motorbike', 'auto'}
-    }
-    xyxy = boxes.xyxy.cpu().numpy()
-    confs = boxes.conf.cpu().numpy() if boxes.conf is not None else None
-    cls_npy = boxes.cls.cpu().numpy() if boxes.cls is not None else None
-    h, w = image_bgr.shape[:2]
-    best = None
-    best_key = -1.0
-    for i in range(len(xyxy)):
-        if cls_npy is not None and vehicle_classes and int(cls_npy[i]) not in vehicle_classes:
-            continue
-        x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy[i]]
-        if x2 <= x1 or y2 <= y1:
-            continue
-        # Prefer large vehicles whose bottom is near the frame bottom.
-        key = (float(y2 - y1) + float(y1)) * (confs[i] if confs is not None else 1.0)
-        if key > best_key:
-            best_key = key
-            best = [x1, y1, x2, y2]
-    return best
+    """Return a COCO vehicle bounding box ``[x1, y1, x2, y2]`` or None."""
+    vehs = _detect_vehicles(image_bgr, conf_threshold=conf_threshold)
+    return vehs[0] if vehs else None
 
 
 def _find_contour_candidates(image_bgr, lower_half_only=True):
@@ -746,28 +836,41 @@ def extract_license_plate(image_bytes_or_path):
             'confidence': float,
             'cropped_img': bytes,   # PNG bytes of the processed plate crop
             'bbox': [x1, y1, x2, y2] | None,
+            'car_bbox': [x1, y1, x2, y2] | None,
+            'all_cars': [[x1, y1, x2, y2], ...],
+            'char_confidences': list | None,
         }
     """
     model = get_plate_detector()
     image_bgr = _read_frame(image_bytes_or_path)
 
+    # 1. Detect cars / vehicles first
+    vehicles = _detect_vehicles(image_bgr)
+
+    # 2. Detect plates on cars
     contour_conf = None
-    box = _detect_plate_boxes(model, image_bgr)
+    boxes = _detect_plate_boxes_many(model, image_bgr, vehicles=vehicles)
+    box = boxes[0] if boxes else None
+
+    car_bbox = None
+    if box is not None and vehicles:
+        px_mid = (box[0] + box[2]) / 2.0
+        py_mid = (box[1] + box[3]) / 2.0
+        for vx1, vy1, vx2, vy2 in vehicles:
+            if vx1 <= px_mid <= vx2 and vy1 <= py_mid <= vy2:
+                car_bbox = [vx1, vy1, vx2, vy2]
+                break
+        if car_bbox is None:
+            car_bbox = vehicles[0]
+    elif vehicles:
+        car_bbox = vehicles[0]
+
     if box is None and CONTOUR_FALLBACK:
-        # Ported from the Kalsekar ANPR project: when the model misses the
-        # plate, search edge blobs shaped like a plate (lower-half prior,
-        # aspect band 2.0-7.5, area * aspect scoring) and OCR the best one.
-        # This is cheap (~10-30ms just to localise) and returns a real bbox
-        # with a heuristic confidence, unlike the whole-frame edge OCR below.
         box = _detect_plate_with_contours(image_bgr)
-        contour_conf = None
         if box is not None:
             contour_conf = _estimate_contour_confidence(box, image_bgr.shape[:2])
 
     if box is None:
-        # No plate localised -- optional PlateVision fallback: OCR the whole
-        # frame edges looking for a plate-shaped string (enable via
-        # ANPR_FULL_IMAGE_FALLBACK=1; costs ~3-5s per no-plate frame).
         fallback_text = None
         if FULL_IMAGE_FALLBACK:
             fallback_text = _full_image_fallback(image_bgr)
@@ -776,10 +879,11 @@ def extract_license_plate(image_bytes_or_path):
             'confidence': 0.4 if fallback_text else 0.0,
             'cropped_img': b'',
             'bbox': None,
+            'car_bbox': car_bbox,
+            'all_cars': vehicles,
         }
 
     x1, y1, x2, y2 = box
-    # Clamp crop to image bounds.
     h, w = image_bgr.shape[:2]
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(w, x2), min(h, y2)
@@ -789,9 +893,10 @@ def extract_license_plate(image_bytes_or_path):
             'confidence': 0.0,
             'cropped_img': b'',
             'bbox': box,
+            'car_bbox': car_bbox,
+            'all_cars': vehicles,
         }
-    # Pad the crop so OCR characters at plate edges survive detection jitter
-    # (PlateVision uses an 8-12px border; preprocess adds its own replicate pad).
+
     pad = 12
     x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
     x2p, y2p = min(w, x2 + pad), min(h, y2 + pad)
@@ -805,13 +910,13 @@ def extract_license_plate(image_bytes_or_path):
             'confidence': 0.0,
             'cropped_img': _encode_png(processed),
             'bbox': box,
+            'car_bbox': car_bbox,
+            'all_cars': vehicles,
         }
 
     plate_text = _clean_plate_text(raw_text)
 
     if contour_conf is not None:
-        # Heuristic confidence from the contour locator can lift a weak read
-        # that still produced plausible text; never above its 0.95 cap.
         conf = max(float(conf), contour_conf * 0.9)
 
     return {
@@ -819,6 +924,8 @@ def extract_license_plate(image_bytes_or_path):
         'confidence': float(conf),
         'cropped_img': _encode_png(processed),
         'bbox': box,
+        'car_bbox': car_bbox,
+        'all_cars': vehicles,
         'char_confidences': char_conf,
     }
 
