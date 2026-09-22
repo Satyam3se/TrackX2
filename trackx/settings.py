@@ -17,52 +17,21 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# ---------------------------------------------------------------------------
-# Minimal .env loader (no external dependency).
-#
-# Keeps `python manage.py runserver` working exactly like the Docker build: a
-# single ``.env`` at the repo root supplies ALL of DATABASE_URL, Redis, the
-# secret key and feature flags, so nothing needs to be hardcoded or exported by
-# hand. Values already present in the real environment always win (they are
-# never overwritten), so docker-compose and CI behave unchanged.
-# ---------------------------------------------------------------------------
-def _load_dotenv(path=BASE_DIR / ".env"):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
-    except OSError:
-        pass
-
-
-_load_dotenv()
-
-
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# Read from the environment (docker-compose sets DJANGO_SECRET_KEY); the
-# hardcoded fallback is a dev-only dummy that must never run in production.
-SECRET_KEY = os.environ.get(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-dev-only-key-do-not-use-in-production',
-)
+SECRET_KEY = 'django-insecure-^_%nadu!!9cec(qkpgb5x%$)fgerp5z5)fk)j^r!xy#+gew*i#'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# Defaults to True for local dev; Vercel sets VERCEL=1 and docker-compose sets
-# DJANGO_DEBUG=0 to turn it off there.
-DEBUG = os.environ.get('VERCEL') != '1' and os.environ.get('DJANGO_DEBUG', '1') == '1'
+# Defaults to True for local dev; Vercel sets VERCEL=1 so we turn it off there.
+DEBUG = os.environ.get('VERCEL') != '1'
 
 ALLOWED_HOSTS = ['*']
 
 CSRF_TRUSTED_ORIGINS = [
+    'https://*.vusercontent.net',
+    'https://*.v0.dev',
     'https://*.vercel.app',
     'http://localhost:3000',
 ]
@@ -73,14 +42,6 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:5173',
     'http://localhost:3000',
 ]
-
-# Base URL of the React SPA (frontend/). It is the one and only TrackX command
-# center now: the retired Django-rendered prototype dashboards redirect here
-# (see dashboard/views.py), so there is exactly one UI and one origin whether
-# the app is opened on :3000 (Docker/Nginx) or :5173 (Vite dev).
-REACT_APP_URL = (
-    os.environ.get('REACT_APP_URL') or 'http://localhost:3000/'
-).rstrip('/') + '/'
 
 
 # Application definition
@@ -158,7 +119,7 @@ DATABASES = {
         'ENGINE': 'django.contrib.gis.db.backends.postgis',
         'NAME': os.environ.get('POSTGRES_DB', 'trackx_db'),
         'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'satyam3s'),
         'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
         'PORT': os.environ.get('POSTGRES_PORT', '5432'),
     }

@@ -25,7 +25,6 @@ from .tracking import IoUTracker, TemporalVoter
 from .vision import (
     _clean_plate_text,
     _detect_plate_boxes_many,
-    _detect_vehicles,
     _encode_png,
     _preprocess_plate_crop,
     _ocr_plate_image_preferred,
@@ -60,18 +59,15 @@ TRACKER_MAX_AGE = 30
 
 
 def _detect_plate_boxes_any(frame):
-    """Detect all plate boxes on vehicles with the tuned detector, then fast-alpr rescue.
+    """Detect all plate boxes with the tuned detector, then fast-alpr rescue.
 
-    The tuned platevision/license-plate chain inside detected vehicles is primary;
-    the fast-alpr ONNX model (65+ countries) only runs as a rescue when the primary
-    finds nothing, and every detection must reside on a detected vehicle. Returns
-    a list of ``[x1, y1, x2, y2]`` boxes (possibly empty).
+    The tuned platevision/license-plate chain is primary; the fast-alpr ONNX
+    model (65+ countries) only runs as a rescue when the primary finds nothing,
+    and every one of its detections is kept. Returns a list of
+    ``[x1, y1, x2, y2]`` boxes (possibly empty).
     """
-    vehicles = _detect_vehicles(frame)
-    if not vehicles:
-        return []
     model = get_plate_detector()
-    boxes = _detect_plate_boxes_many(model, frame, vehicles=vehicles)
+    boxes = _detect_plate_boxes_many(model, frame)
     if boxes:
         return boxes
     detector = get_fast_alpr()
@@ -95,10 +91,7 @@ def _detect_plate_boxes_any(frame):
         x1, y1 = max(0, int(bb.x1)), max(0, int(bb.y1))
         x2, y2 = min(w, int(bb.x2)), min(h, int(bb.y2))
         if x2 > x1 and y2 > y1:
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
-            if any(vx1 <= cx <= vx2 and vy1 <= cy <= vy2 for vx1, vy1, vx2, vy2 in vehicles):
-                out.append([x1, y1, x2, y2])
+            out.append([x1, y1, x2, y2])
     return out
 
 
@@ -201,16 +194,11 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
             plate_crop = frame[y1:y2, x1:x2]
             processed_crop = _preprocess_plate_crop(plate_crop)
 
-            raw_text, ocr_conf, char_conf = _ocr_plate_image_preferred(processed_crop)
+            raw_text, _, char_conf = _ocr_plate_image_preferred(processed_crop)
             if not raw_text:
                 continue
             plate_text = _clean_plate_text(raw_text)
-            if char_conf is not None:
-                conf = float(_mean(char_conf))
-            else:
-                # EasyOCR fallback path (fast-plate-ocr unavailable or empty):
-                # keep the recognizer's own confidence so reads stay votable.
-                conf = float(ocr_conf) if ocr_conf else 0.0
+            conf = float(0.0 if char_conf is None else _mean(char_conf))
 
             # Low-res frames flake: single reads are unreliable. Only
             # reads that clear the floor are evidence; the voter turns

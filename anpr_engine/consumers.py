@@ -26,11 +26,3 @@ class AlertConsumer(AsyncWebsocketConsumer):
         """
         payload = {k: v for k, v in event.items() if k != 'type'}
         await self.send(text_data=json.dumps(payload))
-
-    async def send_progress_update(self, event):
-        """Handler for 'send_progress_update' channel layer group messages.
-
-        Forwarded verbatim (including the ``type`` key) so clients can
-        distinguish video-processing progress updates from alerts.
-        """
-        await self.send(text_data=json.dumps(event))

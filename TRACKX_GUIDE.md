@@ -20,7 +20,6 @@ TrackX is built on a modern, distributed architecture designed for scalability a
 
 ### 🎨 Frontend (The Command Center)
 - **React.js:** A high-performance UI framework for the real-time dashboard.
-- **Cyberpunk Neon UI:** Features a custom CSS design system using glassmorphism, glowing hover effects, and responsive HUD elements.
 - **MapLibre GL / OpenStreetMap:** Provides an interactive map for visualizing camera nodes, vehicle trajectories, and traffic heatmaps.
 - **Vite:** A lightning-fast build tool and development server.
 
@@ -61,12 +60,9 @@ TrackX is built on a modern, distributed architecture designed for scalability a
    ```
 
 ### Accessing the System
-- **Command Center (UI):** `http://localhost:3000` (Nginx-served SPA)
-- **Django API Origin:** `http://localhost:8000` (Auto-redirects to :3000 for UI)
-- **Admin Panel:** `http://localhost:3000/admin/` (Proxied through Nginx)
-- **API Documentation:** `http://localhost:3000/api/v1/` (Proxied through Nginx)
-
-> **Note:** The system is now unified on a single origin. Opening the project on port 8000 will automatically redirect you to the React Command Center at port 3000 to ensure a consistent experience. The `REACT_APP_URL` environment variable controls the redirect target.
+- **Command Center (UI):** `http://localhost:3000`
+- **Admin Panel (Management):** `http://localhost:3000/admin/`
+- **API Documentation:** `http://localhost:3000/api/v1/`
 
 ---
 
@@ -85,75 +81,17 @@ Log into `http://localhost:3000/admin/` to:
 1. **Real-time Monitoring:** Watch the **Anomaly Feed**. When a blacklisted car is spotted, a toast notification appears. Click **PIN TO MAP** to instantly zoom into that camera's location.
 2. **Vehicle Tracking:** Enter a license plate in the search bar. The map will draw a **Cyan Trajectory Line** showing everywhere that vehicle has been seen, along with a timeline of detections.
 3. **City Analytics:** Check the right sidebar for average city speed and total detection counts to monitor urban traffic flow.
-4. **Live Video Upload:** Switch to the "Live Video Upload" tab in the navigation bar. You can upload any local video (e.g., from the `Videos` folder), and the system will stream the frames via WebSockets to the backend, drawing glowing cyan bounding boxes around detected plates in real-time!
 
 ### C. Testing the System (Developer Tools)
-Use the built-in scripts to simulate live environments or test your trained models:
+Use the built-in management commands to simulate a live environment:
 ```bash
-# 1. Run a full end-to-end demo (Seeds data & triggers alerts via WebSockets)
+# Run a full end-to-end demo (Seeds data & triggers alerts)
 docker compose exec web python manage.py run_teacher_demo
-
-# 2. Test direct inference on a local video file WITHOUT needing the database
-# This script reads `Videos/WhatsApp Video 2026-09-12 at 21.55.08.mp4` frame-by-frame 
-# and prints detected license plates directly to the console.
-python test_inference_direct.py
 ```
 
 ---
 
-## 💻 6. Local Development (Single-Origin Dev)
-
-For rapid iteration without Docker, use the Vite dev server with its built-in reverse proxy. The frontend (`frontend/`) talks to a single origin (`http://localhost:5173`) which proxies `/api/`, `/ws/`, `/admin/`, and `/media/` to the Django backend running on `http://localhost:8000`.
-
-### Prerequisites
-- Python 3.11+ with a virtual environment
-- PostgreSQL 15 + PostGIS 3.3 running locally
-- Redis 7 running locally
-
-### Setup
-```bash
-# 1. Backend
-cd track-x
-python -m venv .venv
-.venv\Scripts\activate    # Windows
-pip install -r requirements.txt
-cp .env.example .env       # Edit .env with your local DB credentials
-python manage.py migrate
-python manage.py createsuperuser
-
-# 2. Run Django (ASGI for WebSockets) on :8000
-python manage.py runserver 0.0.0.0:8000
-# OR for production-like ASGI:
-daphne -b 0.0.0.0 -p 8000 trackx.asgi:application
-
-# 3. Run Celery worker in a separate terminal
-.venv\Scripts\activate
-celery -A trackx worker -l info --concurrency=2
-
-# 4. Frontend (Vite dev server) on :5173
-cd frontend
-npm install
-npm run dev
-```
-
-Now open **http://localhost:5173** — the SPA, API, WebSockets, and Admin all work through one port thanks to the Vite proxy. The backend must be reachable at `http://localhost:8000` (set `VITE_DEV_BACKEND` in `frontend/.env` if different).
-
-### Trained Models in Development
-Your trained YOLO weights are automatically discovered by the detector chain in `vision.py`. The backend will **explicitly log** which model it loaded when the server starts (e.g., `[TRACKX] Auto-detected YOLO weights from DETECTOR_CHAIN: ...`). The order of preference is:
-1. `pretrained_weights/platevision_plate_detector.pt` (tuned plate detector)
-2. `license_plate_detector.pt` (TrackX Indian-plate fine-tune)
-3. `runs/detect/license_plate_model-3/weights/best.pt`
-4. `runs/detect/runs/detect/lp_quick/weights/best.pt`
-5. Falls back to base `yolov8n.pt`
-
-The active weights are also reported by the diagnostic command:
-```bash
-python manage.py verify_full_stack
-```
-
----
-
-## ⚙️ 5. The ANPR Pipeline (Technical Flow)
+## ⚙️ 4. The ANPR Pipeline (Technical Flow)
 
 1. **Ingestion:** A camera frame is sent to the `process_camera_frame` Celery task.
 2. **Localization:** **YOLOv8** identifies the license plate $\rightarrow$ crops the image.

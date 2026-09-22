@@ -6,17 +6,17 @@ export default function App() {
   const [currentView, setCurrentView] = useState('dashboard');
 
   return (
-    <div className="app">
-      <nav style={{ flexShrink: 0, padding: '16px 24px', background: 'var(--bg-color-alt)', display: 'flex', gap: '16px', borderBottom: '1px solid var(--glass-border)' }}>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <nav style={{ flexShrink: 0, padding: '1rem', background: '#1a2235', display: 'flex', gap: '1rem', borderBottom: '1px solid #2a3553' }}>
         <button 
           onClick={() => setCurrentView('dashboard')}
-          className={`glass-btn ${currentView === 'dashboard' ? 'active' : ''}`}
+          style={{ padding: '0.5rem 1rem', background: currentView === 'dashboard' ? '#00ffcc' : 'transparent', color: currentView === 'dashboard' ? '#0b0f19' : '#00ffcc', border: '1px solid #00ffcc', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
         >
           Dashboard
         </button>
         <button 
           onClick={() => setCurrentView('live')}
-          className={`glass-btn ${currentView === 'live' ? 'active' : ''}`}
+          style={{ padding: '0.5rem 1rem', background: currentView === 'live' ? '#00ffcc' : 'transparent', color: currentView === 'live' ? '#0b0f19' : '#00ffcc', border: '1px solid #00ffcc', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
         >
           Live Video Upload
         </button>
@@ -26,7 +26,7 @@ export default function App() {
           <Dashboard />
         </div>
       ) : (
-        <div id="live-video-scroller" style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        <div id="live-video-scroller" style={{ flex: 1, overflowY: 'auto' }}>
           <LiveVideoProcessor />
         </div>
       )}

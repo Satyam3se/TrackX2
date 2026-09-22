@@ -51,8 +51,6 @@ class LiveVideoConsumer(AsyncWebsocketConsumer):
         bbox = detection.get('bbox')
         plate_text = detection.get('plate_text', '')
         confidence = detection.get('confidence', 0.0)
-        car_bbox = detection.get('car_bbox')
-        all_cars = detection.get('all_cars', [])
 
         confirmed = None
         if bbox:
@@ -72,8 +70,6 @@ class LiveVideoConsumer(AsyncWebsocketConsumer):
 
         response = {
             'bbox': bbox,
-            'car_bbox': car_bbox,
-            'all_cars': all_cars,
             'plate_text': plate_text,
             'confidence': confidence,
             'scale': scale,

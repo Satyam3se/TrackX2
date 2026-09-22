@@ -6,7 +6,7 @@ import {
   getVideoFeedDetections,
 } from '../services/api';
 
-export default function VideoFeedPanel({ cameras, onAlert, progress = {} }) {
+export default function VideoFeedPanel({ cameras, onAlert }) {
   const [feeds, setFeeds] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [title, setTitle] = useState('');
@@ -15,6 +15,7 @@ export default function VideoFeedPanel({ cameras, onAlert, progress = {} }) {
   const [fetchedDetections, setFetchedDetections] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [progress, setProgress] = useState({}); // Store progress per feed { feedId: percentage }
   const timerRef = useRef(null);
 
   /* camera list derived from the GeoJSON FeatureCollection */
@@ -166,7 +167,7 @@ export default function VideoFeedPanel({ cameras, onAlert, progress = {} }) {
       {feeds.map((feed) => {
         const detections = fetchedDetections[feed.id];
         const processing = processingId === feed.id;
-        const feedProgress = progress[feed.id] ?? 0; // Use prop or 0
+        const feedProgress = progress[feed.id] || 0;
 
         return (
           <div className="vf-item" key={feed.id}>
