@@ -211,6 +211,7 @@ export default function LiveVideoProcessor() {
   const [bestPlate, setBestPlate] = useState(null);
   const [latestPlates, setLatestPlates] = useState([]);
   const [matchStatus, setMatchStatus] = useState(null);
+  const [identified, setIdentified] = useState(null);
   const [videoSize, setVideoSize] = useState(800);
   const wsRef = useRef(null);
   const videoUrlRef = useRef(null);
@@ -229,6 +230,8 @@ export default function LiveVideoProcessor() {
   const sessionIdRef = useRef('');
   const frameIdRef = useRef(0);
   const requestTimerRef = useRef(null);
+  const autoPauseDoneRef = useRef('');
+  const identifiedRef = useRef(null);
 
   const resetResults = () => {
     if (requestTimerRef.current) {
@@ -242,9 +245,12 @@ export default function LiveVideoProcessor() {
     lastPayloadRef.current = null;
     latestPlatesRef.current = [];
     matchStatusRef.current = null;
+    autoPauseDoneRef.current = '';
+    identifiedRef.current = null;
     setBestPlate(null);
     setLatestPlates([]);
     setMatchStatus(null);
+    setIdentified(null);
   };
 
   useEffect(() => {
@@ -349,6 +355,19 @@ export default function LiveVideoProcessor() {
       if (video && canvas) {
         drawDetections(video, canvas, data, query, focusedPlate?.id || '');
       }
+      if (query && matches.length && autoPauseDoneRef.current !== query) {
+        autoPauseDoneRef.current = query;
+        const found = matches[0];
+        const info = {
+          query,
+          label: found.label,
+          matchType: found.match.type,
+          mediaTime: video?.currentTime ?? null,
+        };
+        identifiedRef.current = info;
+        setIdentified(info);
+        video?.pause();
+      }
     };
 
     const connect = () => {
@@ -417,6 +436,10 @@ export default function LiveVideoProcessor() {
 
   useEffect(() => {
     queryRef.current = plateQuery;
+    if (autoPauseDoneRef.current !== plateQuery) {
+      identifiedRef.current = null;
+      setIdentified(null);
+    }
     const rankedPlates = rankPlateReads(latestPlatesRef.current, plateQuery);
     latestPlatesRef.current = rankedPlates;
     setLatestPlates(rankedPlates);
@@ -455,6 +478,19 @@ export default function LiveVideoProcessor() {
         plateQuery,
         focusedPlate?.id || '',
       );
+    }
+    if (plateQuery && matches.length && autoPauseDoneRef.current !== plateQuery) {
+      autoPauseDoneRef.current = plateQuery;
+      const found = matches[0];
+      const info = {
+        query: plateQuery,
+        label: found.label,
+        matchType: found.match.type,
+        mediaTime: videoRef.current?.currentTime ?? null,
+      };
+      identifiedRef.current = info;
+      setIdentified(info);
+      videoRef.current?.pause();
     }
   }, [plateQuery]);
 
@@ -575,12 +611,51 @@ export default function LiveVideoProcessor() {
 
   const handleSearch = (event) => {
     event.preventDefault();
-    setPlateQuery(normalizePlate(plateInput));
+    const nextQuery = normalizePlate(plateInput);
+    if (nextQuery && nextQuery === plateQuery) {
+      autoPauseDoneRef.current = '';
+      identifiedRef.current = null;
+      setIdentified(null);
+      const rankedPlates = rankPlateReads(latestPlatesRef.current, nextQuery);
+      latestPlatesRef.current = rankedPlates;
+      setLatestPlates(rankedPlates);
+      const found = rankedPlates.find((plate) => plate.match.matched);
+      if (found) {
+        autoPauseDoneRef.current = nextQuery;
+        const info = {
+          query: nextQuery,
+          label: found.label,
+          matchType: found.match.type,
+          mediaTime: videoRef.current?.currentTime ?? null,
+        };
+        identifiedRef.current = info;
+        setIdentified(info);
+        videoRef.current?.pause();
+        return;
+      }
+    }
+    setPlateQuery(nextQuery);
   };
 
   const clearSearch = () => {
     setPlateInput('');
     setPlateQuery('');
+    autoPauseDoneRef.current = '';
+    identifiedRef.current = null;
+    setIdentified(null);
+  };
+
+  const resumeAfterIdentified = async () => {
+    setIdentified(null);
+    identifiedRef.current = null;
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      await video.play();
+      setProcessingError('');
+    } catch {
+      setProcessingError('The browser could not resume this video.');
+    }
   };
 
   const resetBest = () => {
@@ -763,6 +838,20 @@ export default function LiveVideoProcessor() {
                   TARGET <strong>{plateQuery}</strong>
                 </div>
               )}
+              {identified && (
+                <div className="live-identified-overlay" role="alert">
+                  <div className="live-identified-box">
+                    <div className="live-identified-title">✓ IDENTIFIED</div>
+                    <div className="live-identified-plate">{identified.label}</div>
+                    <div className="live-identified-sub">
+                      Target {identified.query} found{identified.matchType ? ` · ${getMatchLabel(identified.matchType)}` : ''} — video paused
+                    </div>
+                    <button type="button" className="live-identified-resume" onClick={resumeAfterIdentified}>
+                      Resume video
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <div className="live-empty-state">
@@ -773,11 +862,17 @@ export default function LiveVideoProcessor() {
           )}
         </section>
 
+        {identified && (
+          <div className="live-alert live-alert-identified" role="alert">
+            <strong>IDENTIFIED — {identified.label}.</strong> Target {identified.query} detected, video paused.
+          </div>
+        )}
+
         <section className="live-results" aria-label="Live recognition results">
-          <div className="live-result-card live-result-primary">
+          <div className={`live-result-card live-result-primary ${identified ? 'identified' : ''}`}>
             <div className="live-result-heading">
               <span>{plateQuery ? 'Focused Plate Read' : 'Detected License Plate'}</span>
-              <span className="live-result-tag">{plateQuery ? 'SEARCH FOCUS' : 'BEST READ'}</span>
+              <span className="live-result-tag">{identified ? 'IDENTIFIED' : plateQuery ? 'SEARCH FOCUS' : 'BEST READ'}</span>
             </div>
             {bestPlate ? (
               <>
