@@ -59,10 +59,11 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
-      YOLO_WEIGHTS: /app/license_plate_detector.pt
+      YOLO_WEIGHTS: /app/pretrained_weights/platevision_plate_detector.pt
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
+      - trackx_web_cache:/root/.cache
       - ./license_plate_detector.pt:/app/license_plate_detector.pt
     ports:
       - "8000:8000"
@@ -92,7 +93,7 @@ services:
       EASYOCR_MODULE_PATH: /app/easyocr_models
       GDAL_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgdal.so
       GEOS_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/libgeos_c.so
-      YOLO_WEIGHTS: /app/license_plate_detector.pt
+      YOLO_WEIGHTS: /app/pretrained_weights/platevision_plate_detector.pt
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
@@ -123,3 +124,4 @@ volumes:
   postgres_data:
   trackx_media:
   trackx_models:
+  trackx_web_cache:

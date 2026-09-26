@@ -16,6 +16,7 @@ testingmodelvideos/
 
 # Common ignores
 node_modules
+frontend/dist/
 .next/
 .DS_Store
 # Python

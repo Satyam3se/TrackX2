@@ -3,11 +3,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // Same-origin relative path is the default (works behind the Docker Nginx
 // WebSocket proxy). Override for local dev via VITE_WS_URL, e.g.
 //   VITE_WS_URL=ws://localhost:8000/ws/alerts/
-const WS_URL =
-  import.meta.env.VITE_WS_URL ??
-  (import.meta.env.PROD
-    ? '/ws/alerts/'
-    : 'ws://localhost:8000/ws/alerts/');
+function resolveWsUrl() {
+  const configured = import.meta.env.VITE_WS_URL;
+  if (configured) return configured;
+  if (!import.meta.env.PROD) return 'ws://localhost:8000/ws/alerts/';
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws/alerts/`;
+}
+const WS_URL = resolveWsUrl();
 const MAX_RETRY_DELAY = 30_000;
 const MAX_ALERTS = 100;
 

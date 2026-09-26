@@ -1,0 +1,26 @@
+# ============================================================================
+# TrackX — Caddy reverse proxy (free automatic HTTPS via Let's Encrypt)
+#
+# PUBLIC_HOST is injected from the environment, e.g.:
+#   PUBLIC_HOST=trackx-demo.duckdns.org
+#
+# - First boot on a fresh domain: Caddy fetches a free cert automatically.
+# - Every request (pages, /api/*, /ws/* websockets, /media/*) is forwarded
+#   to the frontend Nginx container, which serves the SPA and proxies
+#   /api/ + /ws/ to the Django backend internally.
+# - If PUBLIC_HOST is unset (local IP testing), Caddy serves plain HTTP.
+# ============================================================================
+
+{$PUBLIC_HOST} {
+	reverse_proxy frontend:80
+
+	encode gzip
+
+	header {
+		# Basic hardening without breaking map tiles / websockets
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

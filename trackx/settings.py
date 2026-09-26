@@ -21,27 +21,53 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-^_%nadu!!9cec(qkpgb5x%$)fgerp5z5)fk)j^r!xy#+gew*i#'
+# In production set DJANGO_SECRET_KEY env var. Refuse to boot publicly with
+# the baked-in dev key when DEBUG is off.
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-^_%nadu!!9cec(qkpgb5x%$)fgerp5z5)fk)j^r!xy#+gew*i#',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# Defaults to True for local dev; Vercel sets VERCEL=1 so we turn it off there.
-DEBUG = os.environ.get('VERCEL') != '1'
+# Defaults to ON for local dev convenience; production compose files set
+# DJANGO_DEBUG=0 explicitly (and VERCEL=1 legacy flag forces it off).
+DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1' and os.environ.get('VERCEL') != '1'
 
-ALLOWED_HOSTS = ['*']
+if not DEBUG and SECRET_KEY.startswith('django-insecure-'):
+    raise RuntimeError(
+        'Refusing to start with the insecure dev SECRET_KEY while DEBUG is off. '
+        'Set a strong DJANGO_SECRET_KEY environment variable.'
+    )
+
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get('ALLOWED_HOSTS', '*').split(',')
+    if h.strip()
+]
+
+_PUBLIC_HOST = os.environ.get('PUBLIC_HOST', '').strip()
 
 CSRF_TRUSTED_ORIGINS = [
     'https://*.vusercontent.net',
     'https://*.v0.dev',
     'https://*.vercel.app',
     'http://localhost:3000',
-]
+] + ([f'https://{_PUBLIC_HOST}'] if _PUBLIC_HOST else [])
 
 # CORS: allow the local React (Vite) dev server to consume the REST + WS APIs.
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://localhost:3000',
-]
+] + ([f'https://{_PUBLIC_HOST}'] if _PUBLIC_HOST else [])
+
+# Behind Caddy/Nginx TLS terminator: honor X-Forwarded-Proto so Django builds
+# https:// URLs and CSRF checks pass. Cookies only gain Secure flag when we
+# actually serve HTTPS (PUBLIC_HOST set) to avoid breaking local http.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+if _PUBLIC_HOST:
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
 
 
 # Application definition
@@ -94,17 +120,23 @@ TEMPLATES = [
 WSGI_APPLICATION = 'trackx.wsgi.application'
 ASGI_APPLICATION = 'trackx.asgi.application'
 
+_REDIS_URL = os.environ.get('REDIS_URL')
 CHANNEL_LAYERS = {
     'default': {
         # Use Redis in production (Docker), fall back to in-memory for local dev
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [os.environ.get('REDIS_URL', ('127.0.0.1', 6379))],
+            # Pass socket_timeout=None: redis-py 8.x defaults to a 5s socket
+            # read timeout, which races Channels' idle BRPOP/BZPOPMIN polling.
+            # When no message arrives, the read times out first, raising
+            # "Timeout reading from redis" and killing every idle WebSocket
+            # consumer after ~5s.
+            'hosts': [{'address': _REDIS_URL, 'socket_timeout': None}],
             'capacity': 1500,
             'expiry': 10,
         },
     },
-} if os.environ.get('REDIS_URL') else {
+} if _REDIS_URL else {
     'default': {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
@@ -190,8 +222,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-# Vercel's serverless filesystem is read-only apart from /tmp.
-STATIC_ROOT = '/tmp/staticfiles'
+# Collectstatic target: /app/staticfiles in Docker, BASE_DIR/staticfiles
+# locally. Overridable via STATIC_ROOT env (legacy Vercel used /tmp).
+STATIC_ROOT = os.environ.get('STATIC_ROOT', str(BASE_DIR / 'staticfiles'))
 
 # Uploaded media (video feeds + plate crops). Shared across web/celery via
 # the `trackx_media` volume so async workers can read uploads.
@@ -214,3 +247,23 @@ STORAGES = {
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Console logging so ANPR/Channels errors surface in Daphne/Celery logs
+# (Django's default config only wires up a few framework loggers).
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '[%(levelname)s] %(name)s: %(message)s'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'simple'},
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'WARNING',
+    },
+    'loggers': {
+        'anpr_engine': {'level': 'INFO', 'handlers': ['console'], 'propagate': False},
+    },
+}

@@ -43,6 +43,21 @@ CONTOUR_FALLBACK = os.environ.get('ANPR_CONTOUR_FALLBACK', '1') == '1'
 #: images fast-plate-ocr cannot read. Set ``0`` to force the legacy EasyOCR
 #: path everywhere. The module import is lazy: nothing loads unless this is on.
 FAST_OCR = os.environ.get('ANPR_FAST_OCR', '1') == '1'
+#: Confidence at or above which a fast-plate-ocr read is trusted outright and
+#: the EasyOCR second opinion is skipped. The engine is well calibrated on
+#: low-res crops: measured over the 250-crop labelled set, reads at conf>=0.9
+#: are 97.6% exact while reads below 0.7 are 0% exact. Lower it to spend more
+#: latency on accuracy, raise it to go faster.
+FAST_OCR_TRUST_CONFIDENCE = float(os.environ.get('ANPR_FAST_OCR_TRUST', '0.8'))
+#: Consult EasyOCR as a second opinion whenever the fast-plate-ocr read is not
+#: trustworthy. fast-plate-ocr alone is weak on small/blurred crops (16.7%
+#: exact, 34.2% char on ``syn_eval``) while EasyOCR alone reaches 31.7% / 62.9%.
+#: The old path only reached for EasyOCR when fast-plate-ocr returned *nothing*,
+#: which happens on under 1% of real crops -- so the far more accurate engine
+#: almost never ran. Gating on trust instead lifts the ensemble to 35.0% exact
+#: and 63.7% char. Costs ~340ms on the crops that are escalated, so set
+#: ``ANPR_OCR_ENSEMBLE=0`` to restore fast-plate-ocr-only behaviour.
+OCR_ENSEMBLE = os.environ.get('ANPR_OCR_ENSEMBLE', '1') == '1'
 #: Use the fast-alpr pretrained ONNX detector (YOLOv9-t-384, detects plates of
 #: 65+ countries) as an *additional* detector, tried only when the primary
 #: platevision/license-plate chain locates nothing. On most footage the tuned
@@ -395,7 +410,9 @@ def _detect_vehicle_bbox(image_bgr, conf_threshold=0.35):
     frame, so among confident detections we prefer the one whose bottom is
     closest to the frame bottom (that is where a plate can be OCR'd).
     """
-    model = get_yolo_model(None)
+    model = _get_vehicle_model()
+    if model is None:
+        return None
     results = model.predict(
         source=image_bgr, conf=conf_threshold, verbose=False,
     )
@@ -427,6 +444,104 @@ def _detect_vehicle_bbox(image_bgr, conf_threshold=0.35):
             best_key = key
             best = [x1, y1, x2, y2]
     return best
+
+
+@lru_cache(maxsize=1)
+def _get_vehicle_model():
+    try:
+        return get_yolo_model(os.environ.get('YOLO_VEHICLE_WEIGHTS') or 'yolov8n.pt')
+    except Exception as exc:
+        print(f'[WARN] vehicle model unavailable: {exc}')
+        return None
+
+
+def _detect_vehicle_boxes(image_bgr, conf_threshold=0.25):
+    if image_bgr is None or image_bgr.size == 0:
+        return []
+    try:
+        model = _get_vehicle_model()
+        if model is None:
+            return []
+        results = model.predict(
+            source=image_bgr, conf=conf_threshold, verbose=False,
+        )
+    except Exception as exc:
+        print(f'[WARN] vehicle detection failed: {exc}')
+        return []
+    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+        return []
+    boxes = results[0].boxes
+    names = getattr(model, 'names', None) or {}
+    if isinstance(names, dict):
+        vehicle_classes = {
+            cls_id for cls_id, name in names.items()
+            if str(name).lower() in {
+                'car', 'truck', 'bus', 'motorcycle', 'motorbike', 'auto',
+            }
+        }
+    elif isinstance(names, (list, tuple)):
+        vehicle_classes = {
+            index for index, name in enumerate(names)
+            if str(name).lower() in {
+                'car', 'truck', 'bus', 'motorcycle', 'motorbike', 'auto',
+            }
+        }
+    else:
+        vehicle_classes = set()
+    if not vehicle_classes:
+        return []
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy() if boxes.conf is not None else None
+    classes = boxes.cls.cpu().numpy() if boxes.cls is not None else None
+    h, w = image_bgr.shape[:2]
+    detected = []
+    for index, coordinates in enumerate(xyxy):
+        if vehicle_classes and (
+            classes is None or int(classes[index]) not in vehicle_classes
+        ):
+            continue
+        x1, y1, x2, y2 = [int(round(float(value))) for value in coordinates]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        confidence = float(confs[index]) if confs is not None else 0.0
+        detected.append(([x1, y1, x2, y2], confidence))
+    detected.sort(key=lambda item: item[1], reverse=True)
+    return [box for box, _ in detected]
+
+
+def _vehicle_for_plate(plate_bbox, vehicle_boxes):
+    if not plate_bbox or not vehicle_boxes:
+        return None
+    x1, y1, x2, y2 = plate_bbox
+    center_x = (float(x1) + float(x2)) / 2
+    center_y = (float(y1) + float(y2)) / 2
+    plate_area = max(1.0, (float(x2) - x1) * (float(y2) - y1))
+    ranked = []
+    for vehicle in vehicle_boxes:
+        vx1, vy1, vx2, vy2 = vehicle
+        intersection_width = max(0.0, min(x2, vx2) - max(x1, vx1))
+        intersection_height = max(0.0, min(y2, vy2) - max(y1, vy1))
+        intersection = intersection_width * intersection_height
+        if intersection <= 0:
+            continue
+        vehicle_center_x = (float(vx1) + float(vx2)) / 2
+        vehicle_center_y = (float(vy1) + float(vy2)) / 2
+        distance = (
+            (center_x - vehicle_center_x) ** 2
+            + (center_y - vehicle_center_y) ** 2
+        )
+        contains_center = vx1 <= center_x <= vx2 and vy1 <= center_y <= vy2
+        area = (float(vx2) - vx1) * (float(vy2) - vy1)
+        ranked.append((
+            contains_center,
+            intersection / plate_area,
+            -distance,
+            -area,
+            vehicle,
+        ))
+    return max(ranked)[-1] if ranked else None
 
 
 def _find_contour_candidates(image_bgr, lower_half_only=True):
@@ -529,12 +644,18 @@ def _sharpen(gray):
     return cv2.filter2D(gray, -1, kernel)
 
 
-def _preprocess_plate_crop(plate_bgr):
+def _preprocess_plate_crop(plate_bgr, *, sharpen=True):
     """Advanced preprocessing for license plates (adapted from PlateVision-AI).
 
     Pipeline: deskew -> pad border -> 3x LANCZOS upscale -> grayscale ->
     bilateral filter -> CLAHE -> sharpen, tuned so EasyOCR reads the text
     region cleanly even on tilted or low-light crops.
+
+    ``sharpen=False`` skips the final unsharp-mask step. An A/B against real
+    low-res footage shows the unsharp step *degrades* fast-plate-ocr's reads
+    (63% -> 70% correct on the TS07JS9670 window) while barely helping
+    EasyOCR, so the fast-plate-ocr path feeds the unsharpened crop and only
+    the EasyOCR fallback receives the fully-sharpened version.
     """
     # 1. Bring tilted plates onto the horizontal baseline.
     plate_bgr = _deskew_plate(plate_bgr)
@@ -564,11 +685,14 @@ def _preprocess_plate_crop(plate_bgr):
     gray = cv2.cvtColor(plate_bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.bilateralFilter(gray, 5, 75, 75)
 
-    # 5. CLAHE (Contrast Limited Adaptive Histogram Equalization) + sharpen.
+    # 5. CLAHE (Contrast Limited Adaptive Histogram Equalization).
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrast_enhanced = clahe.apply(gray)
+    result = clahe.apply(gray)
 
-    result = _sharpen(contrast_enhanced)
+    # Optional final unsharp mask. Off for the fast-plate-ocr path: real low-res
+    # footage reads ~7% better without it and the synthetic benchmark agrees.
+    if sharpen:
+        result = _sharpen(result)
 
     # 6. Cap the largest side handed to EasyOCR. Without this a loose/attacker
     # box makes OCR scan huge images (a 360x360 crop at 3x = 1080x1080 just to
@@ -641,25 +765,83 @@ def _ocr_plate_image_fast(processed, allowlist=True):
     return plate, conf, [float(c) for c in char_probs[:n]]
 
 
-def _ocr_plate_image_preferred(processed, allowlist=True):
-    """Read a preprocessed plate crop, fast-plate-ocr first, EasyOCR fallback.
+def _read_is_structurally_valid(raw_text):
+    """True when an OCR read resolves to a well-formed Indian plate layout.
 
-    fast-plate-ocr is the primary engine when available: ~100x faster than
-    EasyOCR with per-character confidences. When it returns nothing (empty
-    plate / low signal / model unavailable) we fall back to the EasyOCR rescue
-    variant so every plate the old pipeline could read is still readable.
-    ``_ocr_plate_image_rescue`` already includes the plain EasyOCR pass, so a
-    single fallback call is enough.
+    Cheap proxy for "the engine read a plate rather than some plate-shaped
+    noise": it reuses the resolver that ``_clean_plate_text`` already runs, so
+    no extra OCR work is needed.
+    """
+    if not raw_text:
+        return False
+    from .plate_text import is_valid_plate, resolve_plate_structure
+
+    plate, _score = resolve_plate_structure(raw_text)
+    return bool(plate) and is_valid_plate(plate)
+
+
+def _ocr_plate_image_preferred(plate_crop, allowlist=True, *, trust_confidence=None):
+    """Read a RAW plate crop: fast-plate-ocr first, EasyOCR as second opinion.
+
+    ``plate_crop`` is the **raw BGR crop** pulled straight from the frame, and
+    each engine gets the preprocessing it reads best on real low-res footage:
+
+      * **fast-plate-ocr** (primary): the deskew -> 3x LANCZOS -> grayscale ->
+        bilateral -> CLAHE pipeline *without* the final unsharp mask. A/B on
+        real footage (TS07JS9670 window) showed the unsharp step degrading this
+        model's reads (63% -> 70% correct without it); the synthetic benchmark
+        agrees. Bilateral must stay (dropping it drops reads to ~54%).
+      * **EasyOCR** (second opinion): the full legacy ``_preprocess_plate_crop``
+        pipeline *including* the sharpen step, which is what it was tuned for
+        (``_ocr_plate_image_rescue``).
+
+    A read is only accepted from fast-plate-ocr when it is *trustworthy*:
+    confidence >= ``trust_confidence`` **and** the text resolves to a valid
+    plate layout. Otherwise EasyOCR is asked for its own read and the two are
+    arbitrated by structural validity. EasyOCR is a much stronger reader on
+    small, blurred, or rotated crops, but it costs ~340ms per crop versus
+    ~35ms, so it is only paid for where it can change the answer. Rationale and
+    measurements live in ``TRACKX_GUIDE.md``.
 
     Returns ``(text, confidence, char_confidences)``. ``char_confidences`` is
-    ``None`` on the EasyOCR path (it has no per-char scores); the FastOCR path
-    returns one float per character.
+    ``None`` when the winning read came from EasyOCR (no per-char scores); the
+    fast-plate-ocr path returns one float per character.
     """
-    fast_text, fast_conf, fast_chars = _ocr_plate_image_fast(processed, allowlist)
-    if fast_text:
+    if trust_confidence is None:
+        trust_confidence = FAST_OCR_TRUST_CONFIDENCE
+
+    fast_text, fast_conf, fast_chars = _ocr_plate_image_fast(
+        _preprocess_plate_crop(plate_crop, sharpen=False),
+    )
+    fast_conf = float(fast_conf or 0.0)
+
+    # Trustworthy fast read: accept it and never touch the slow engine.
+    if fast_text and not OCR_ENSEMBLE:
         return fast_text, fast_conf, fast_chars
+    if (
+        fast_text
+        and fast_conf >= trust_confidence
+        and _read_is_structurally_valid(fast_text)
+    ):
+        return fast_text, fast_conf, fast_chars
+
+    processed = _preprocess_plate_crop(plate_crop, sharpen=True)
     eas_text, eas_conf = _ocr_plate_image_rescue(processed, allowlist)
-    return eas_text, eas_conf, None
+    eas_conf = float(eas_conf or 0.0)
+
+    if not fast_text:
+        return eas_text, eas_conf, None
+    if not eas_text:
+        # EasyOCR is stricter and can come back empty on a crop the fast model
+        # did read; never throw a usable read away.
+        return fast_text, fast_conf, fast_chars
+
+    # Both engines produced text. Prefer whichever resolves to a real plate
+    # layout; only fall back to "always take the better reader" when neither
+    # does, so genuinely non-Indian plates are still reported verbatim.
+    if _read_is_structurally_valid(eas_text) or not _read_is_structurally_valid(fast_text):
+        return eas_text, eas_conf, None
+    return fast_text, fast_conf, fast_chars
 
 
 def _ocr_plate_image_rescue(processed, allowlist=True):
@@ -723,6 +905,54 @@ def _full_image_fallback(image_bgr):
     return plate_text
 
 
+def extract_license_plates(image_bytes_or_path):
+    model = get_plate_detector()
+    image_bgr = _read_frame(image_bytes_or_path)
+    boxes = _detect_plate_boxes_many(model, image_bgr)
+    contour_confidences = {}
+    if not boxes and CONTOUR_FALLBACK:
+        candidates = sorted(
+            _find_contour_candidates(image_bgr),
+            key=lambda candidate: candidate[0],
+            reverse=True,
+        )
+        boxes = [box for _, box in candidates]
+        contour_confidences = {
+            tuple(box): _estimate_contour_confidence(box, image_bgr.shape[:2])
+            for box in boxes
+        }
+
+    vehicle_boxes = _detect_vehicle_boxes(image_bgr) if boxes else []
+    h, w = image_bgr.shape[:2]
+    detections = []
+    for box in boxes:
+        x1, y1, x2, y2 = box
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(w, int(x2)), min(h, int(y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        clipped_box = [x1, y1, x2, y2]
+        pad = 12
+        x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
+        x2p, y2p = min(w, x2 + pad), min(h, y2 + pad)
+        plate_bgr = image_bgr[y1p:y2p, x1p:x2p]
+        raw_text, confidence, char_confidences = _ocr_plate_image_preferred(
+            plate_bgr,
+        )
+        plate_text = _clean_plate_text(raw_text) if raw_text else ''
+        contour_conf = contour_confidences.get(tuple(box))
+        if contour_conf is not None:
+            confidence = max(float(confidence), contour_conf * 0.9)
+        detections.append({
+            'plate_text': plate_text,
+            'confidence': float(confidence),
+            'bbox': clipped_box,
+            'char_confidences': char_confidences,
+            'vehicle_bbox': _vehicle_for_plate(clipped_box, vehicle_boxes),
+        })
+    return detections
+
+
 def extract_license_plate(image_bytes_or_path):
     """Detect + OCR a license plate in a single image.
 
@@ -783,9 +1013,14 @@ def extract_license_plate(image_bytes_or_path):
     x1p, y1p = max(0, x1 - pad), max(0, y1 - pad)
     x2p, y2p = min(w, x2 + pad), min(h, y2 + pad)
     plate_bgr = image_bgr[y1p:y2p, x1p:x2p]
+    # Heavy EasyOCR-tuned crop (with the final sharpen step): used for the
+    # fallback path inside _ocr_plate_image_preferred and for the persisted
+    # crop image.
     processed = _preprocess_plate_crop(plate_bgr)
 
-    raw_text, conf, char_conf = _ocr_plate_image_preferred(processed)
+    # fast-plate-ocr reads its own unsharpened preprocessing of the RAW crop
+    # (the final sharpen step degrades it); EasyOCR fallback lives inside.
+    raw_text, conf, char_conf = _ocr_plate_image_preferred(plate_bgr)
     if not raw_text:
         return {
             'plate_text': '',

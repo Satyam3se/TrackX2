@@ -53,9 +53,24 @@ STABLE_CONFIRM_READS = 3
 VOTER_WINDOW = 8
 VOTER_MIN_DWELL = 5
 VOTER_TOP_K = 3
-#: IoU below which a new track is started for a plate box.
+#: IoU against a track's *predicted* box below which a match must instead clear
+#: ``TRACKER_MAX_CENTER_DISTANCE``. Overlap is still the primary signal.
 TRACKER_IOU_THRESHOLD = 0.3
 TRACKER_MAX_AGE = 30
+#: How far a plate box centre may sit from its track's predicted centre,
+#: measured in predicted-box diagonals, before the pairing is rejected. This is
+#: the gate that keeps a fast vehicle on one track: at highway speed the plate
+#: outruns its own prediction's overlap every sampled frame, and overlap-only
+#: association would mint a new track ID each time -- resetting the temporal
+#: voter so the plate could never reach ``VOTER_MIN_DWELL`` and was never
+#: confirmed. Scale invariant, so it behaves the same near and far.
+TRACKER_MAX_CENTER_DISTANCE = 1.5
+#: EMA weight on a track's newly measured velocity. Lower = steadier prediction
+#: but slower to react when a vehicle changes speed or direction.
+TRACKER_VELOCITY_SMOOTHING = 0.5
+#: Cap on measured speed, in predicted-box diagonals per frame, so a single
+#: mis-association cannot fling a prediction off screen permanently.
+TRACKER_MAX_SPEED_SCALE = 2.0
 
 
 def _detect_plate_boxes_any(frame):
@@ -127,7 +142,11 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
     channel_layer = get_channel_layer()
 
     tracker = IoUTracker(
-        iou_threshold=TRACKER_IOU_THRESHOLD, max_age=TRACKER_MAX_AGE,
+        iou_threshold=TRACKER_IOU_THRESHOLD,
+        max_age=TRACKER_MAX_AGE,
+        max_center_distance=TRACKER_MAX_CENTER_DISTANCE,
+        velocity_smoothing=TRACKER_VELOCITY_SMOOTHING,
+        max_speed_scale=TRACKER_MAX_SPEED_SCALE,
     )
     voter = TemporalVoter(
         window=VOTER_WINDOW, min_dwell=VOTER_MIN_DWELL, top_k=VOTER_TOP_K,
@@ -183,7 +202,7 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
             track_plate.pop(stale, None)
             stable_confirm.pop(stale, None)
 
-        for tid, box in tracked:
+        for tid, box, _predicted in tracked:
             x1, y1, x2, y2 = box
             h, w = frame.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
@@ -192,20 +211,28 @@ def process_video_stream(video_feed_id: int, sample_rate: int = 5) -> dict:
             if x2 <= x1 or y2 <= y1:
                 continue
             plate_crop = frame[y1:y2, x1:x2]
+            # Heavy crop is only for persistence; OCR must see the raw crop
+            # (the heavy processing destroys fast-plate-ocr accuracy).
             processed_crop = _preprocess_plate_crop(plate_crop)
 
-            raw_text, _, char_conf = _ocr_plate_image_preferred(processed_crop)
+            raw_text, _, char_conf = _ocr_plate_image_preferred(plate_crop)
             if not raw_text:
                 continue
             plate_text = _clean_plate_text(raw_text)
             conf = float(0.0 if char_conf is None else _mean(char_conf))
+            # Per-character confidences align to the read text when cleaning
+            # preserved its length; pass them through so the voter can weight
+            # each character slot by its own confidence instead of a flat mean.
+            read_chars = None
+            if char_conf and len(char_conf) == len(plate_text):
+                read_chars = [float(c) for c in char_conf]
 
             # Low-res frames flake: single reads are unreliable. Only
             # reads that clear the floor are evidence; the voter turns
             # the accumulated majority into a confirmed text.
             if conf < CONFIDENCE_VOTE_READ_FLOOR:
                 continue
-            confirmed = voter.observe(tid, plate_text, conf)
+            confirmed = voter.observe(tid, plate_text, conf, read_chars)
             confirmed_text = None
             if confirmed is not None:
                 cleaned_confirmed = _clean_plate_text(confirmed)

@@ -1,0 +1,51 @@
+# ============================================================================
+# TrackX — production override for a free VPS (Oracle Always-Free, etc.)
+#
+# Usage:
+#   cp .env.prod.example .env
+#   # edit .env: DJANGO_SECRET_KEY + PUBLIC_HOST (free DuckDNS name)
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# What this adds over docker-compose.yml:
+#   caddy      Caddy 2 — free Let's Encrypt HTTPS, reverse-proxies everything
+#              to the frontend Nginx (which already proxies /api/ + /ws/).
+#   frontend   no longer publishes :3000 publicly; only reachable via Caddy.
+#   web        :8000 no longer published; only reachable via frontend/Caddy.
+# ============================================================================
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: trackx-caddy
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env, e.g. trackx-demo.duckdns.org}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - frontend
+
+  # Hide internal ports behind Caddy on public hosts.
+  web:
+    ports: []
+    environment:
+      DJANGO_DEBUG: "0"
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-${PUBLIC_HOST:-*}}
+
+  celery:
+    environment:
+      DJANGO_DEBUG: "0"
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+
+  frontend:
+    ports: []
+
+volumes:
+  caddy_data:
+  caddy_config:
