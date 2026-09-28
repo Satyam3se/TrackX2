@@ -50,7 +50,6 @@ _PUBLIC_HOST = os.environ.get('PUBLIC_HOST', '').strip()
 CSRF_TRUSTED_ORIGINS = [
     'https://*.vusercontent.net',
     'https://*.v0.dev',
-    'https://*.vercel.app',
     'http://localhost:3000',
 ] + ([f'https://{_PUBLIC_HOST}'] if _PUBLIC_HOST else [])
 
