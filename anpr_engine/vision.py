@@ -46,8 +46,10 @@ FAST_OCR = os.environ.get('ANPR_FAST_OCR', '1') == '1'
 #: Confidence at or above which a fast-plate-ocr read is trusted outright and
 #: the EasyOCR second opinion is skipped. The engine is well calibrated on
 #: low-res crops: measured over the 250-crop labelled set, reads at conf>=0.9
-#: are 97.6% exact while reads below 0.7 are 0% exact. Lower it to spend more
-#: latency on accuracy, raise it to go faster.
+#: are 97.6% exact while reads below 0.7 are 0% exact. Raising the bar from
+#: 0.5 to 0.8 sends the weak 0.5-0.8 band to EasyOCR (the stronger reader on
+#: small/blurred crops): +4pp exact on the w96 stress bench. Costs ~340ms on
+#: the extra escalated crops, so lower it to go faster.
 FAST_OCR_TRUST_CONFIDENCE = float(os.environ.get('ANPR_FAST_OCR_TRUST', '0.8'))
 #: Consult EasyOCR as a second opinion whenever the fast-plate-ocr read is not
 #: trustworthy. fast-plate-ocr alone is weak on small/blurred crops (16.7%
@@ -644,10 +646,10 @@ def _sharpen(gray):
     return cv2.filter2D(gray, -1, kernel)
 
 
-def _preprocess_plate_crop(plate_bgr, *, sharpen=True):
+def _preprocess_plate_crop(plate_bgr, *, sharpen=True, upscale=3.0):
     """Advanced preprocessing for license plates (adapted from PlateVision-AI).
 
-    Pipeline: deskew -> pad border -> 3x LANCZOS upscale -> grayscale ->
+    Pipeline: deskew -> pad border -> Nx LANCZOS upscale -> grayscale ->
     bilateral filter -> CLAHE -> sharpen, tuned so EasyOCR reads the text
     region cleanly even on tilted or low-light crops.
 
@@ -656,6 +658,7 @@ def _preprocess_plate_crop(plate_bgr, *, sharpen=True):
     (63% -> 70% correct on the TS07JS9670 window) while barely helping
     EasyOCR, so the fast-plate-ocr path feeds the unsharpened crop and only
     the EasyOCR fallback receives the fully-sharpened version.
+    ``upscale`` overrides the 3x factor (use 4.5x for distant ~96px crops).
     """
     # 1. Bring tilted plates onto the horizontal baseline.
     plate_bgr = _deskew_plate(plate_bgr)
@@ -665,7 +668,7 @@ def _preprocess_plate_crop(plate_bgr, *, sharpen=True):
         plate_bgr, 8, 8, 8, 8, cv2.BORDER_REPLICATE,
     )
 
-    # 3. Big 3x LANCZOS upscale: sharper than the old 2x CUBIC. For plates
+    # 3. Big Nx LANCZOS upscale: sharper than the old 2x CUBIC. For plates
     #    already >900px wide (deep zoom / oversized boxes), upscaling further
     #    only slows OCR, so clamp the target area.
     target_max_area = 900 * 250
@@ -678,7 +681,7 @@ def _preprocess_plate_crop(plate_bgr, *, sharpen=True):
         )
     else:
         plate_bgr = cv2.resize(
-            plate_bgr, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_LANCZOS4,
+            plate_bgr, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_LANCZOS4,
         )
 
     # 4. Grayscale + bilateral noise reduction.
@@ -829,6 +832,41 @@ def _ocr_plate_image_preferred(plate_crop, allowlist=True, *, trust_confidence=N
     eas_text, eas_conf = _ocr_plate_image_rescue(processed, allowlist)
     eas_conf = float(eas_conf or 0.0)
 
+    # Second chance at a larger upscale for weak reads (tiny/distant plates).
+    # At ~96px crop widths the standard 3x upscale leaves characters at
+    # ~9px each and both engines return short garbage ('IO', 'CST', 'GE').
+    # A 4.5x LANCZOS retry resolves several of those to full plates.
+    # Only fires when the first EasyOCR read is weak, so clear plates
+    # pay nothing and weak crops pay one extra ~300-500ms pass.
+    OCR_RETRY_UPSCALE = 4.5
+    OCR_RETRY_CONFIDENCE = 0.5
+    if (
+        eas_conf < OCR_RETRY_CONFIDENCE
+        or not eas_text
+        or not _read_is_structurally_valid(eas_text)
+    ):
+        retry_processed = _preprocess_plate_crop(
+            plate_crop, sharpen=True, upscale=OCR_RETRY_UPSCALE,
+        )
+        retry_text, retry_conf = _ocr_plate_image_rescue(
+            retry_processed, allowlist,
+        )
+        retry_conf = float(retry_conf or 0.0)
+        # Adopt the retry only when it is strictly better: a valid read
+        # beats an invalid one, otherwise clearly higher confidence wins.
+        # (Never replace a valid read with an invalid one.)
+        if retry_text and (
+            not eas_text
+            or (
+                _read_is_structurally_valid(retry_text)
+                and (
+                    not _read_is_structurally_valid(eas_text)
+                    or retry_conf > eas_conf + 0.05
+                )
+            )
+        ):
+            eas_text, eas_conf = retry_text, retry_conf
+
     if not fast_text:
         return eas_text, eas_conf, None
     if not eas_text:
@@ -837,11 +875,19 @@ def _ocr_plate_image_preferred(plate_crop, allowlist=True, *, trust_confidence=N
         return fast_text, fast_conf, fast_chars
 
     # Both engines produced text. Prefer whichever resolves to a real plate
-    # layout; only fall back to "always take the better reader" when neither
-    # does, so genuinely non-Indian plates are still reported verbatim.
-    if _read_is_structurally_valid(eas_text) or not _read_is_structurally_valid(fast_text):
+    # layout; when both are valid, prefer higher-confidence or longer read.
+    # When neither is valid, keep the longer read as a best-effort guess.
+    fast_valid = _read_is_structurally_valid(fast_text)
+    eas_valid = _read_is_structurally_valid(eas_text)
+    if fast_valid and eas_valid:
+        if abs(fast_conf - eas_conf) > 0.05:
+            return (fast_text, fast_conf, fast_chars) if fast_conf > eas_conf else (eas_text, eas_conf, None)
+        return (fast_text, fast_conf, fast_chars) if len(fast_text) >= len(eas_text) else (eas_text, eas_conf, None)
+    if eas_valid:
         return eas_text, eas_conf, None
-    return fast_text, fast_conf, fast_chars
+    if fast_valid:
+        return fast_text, fast_conf, fast_chars
+    return (fast_text, fast_conf, fast_chars) if len(fast_text) >= len(eas_text) else (eas_text, eas_conf, None)
 
 
 def _ocr_plate_image_rescue(processed, allowlist=True):

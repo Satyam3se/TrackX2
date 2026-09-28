@@ -42,14 +42,16 @@ PLATE_STRUCTURES = (
 
 #: OCR confusion maps, keyed by the *observed* char. ``ambiguous`` values are
 #: acceptable alternatives with a small penalty.
+#  Base Indian plate confusions.
 _CONF = {
     # observed letter -> digit alternative
     'O': {'0'}, 'I': {'1'}, 'L': {'1'}, 'S': {'5'},
     'Z': {'2'}, 'B': {'8'}, 'G': {'6'}, 'Q': {'0'},
     'D': {'0'}, 'T': {'7'},
     # observed digit -> letter alternative
-    '0': {'O'}, '1': {'I'}, '2': {'Z'}, '5': {'S'},
-    '8': {'B'}, '6': {'G'}, '7': {'T'},
+    '0': {'O', 'Q'}, '1': {'I', 'L', 'T'},
+    '2': {'Z', 'S'}, '5': {'S'},
+    '8': {'B'}, '6': {'G'}, '7': {'T', 'L'},
 }
 
 #: Expected slot layout for fixed-length plates keyed by total length.
