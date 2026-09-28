@@ -30,8 +30,8 @@ SECRET_KEY = os.environ.get(
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # Defaults to ON for local dev convenience; production compose files set
-# DJANGO_DEBUG=0 explicitly (and VERCEL=1 legacy flag forces it off).
-DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1' and os.environ.get('VERCEL') != '1'
+# DJANGO_DEBUG=0 explicitly.
+DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1'
 
 if not DEBUG and SECRET_KEY.startswith('django-insecure-'):
     raise RuntimeError(
@@ -223,7 +223,7 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 # Collectstatic target: /app/staticfiles in Docker, BASE_DIR/staticfiles
-# locally. Overridable via STATIC_ROOT env (legacy Vercel used /tmp).
+# locally. Overridable via the STATIC_ROOT env var.
 STATIC_ROOT = os.environ.get('STATIC_ROOT', str(BASE_DIR / 'staticfiles'))
 
 # Uploaded media (video feeds + plate crops). Shared across web/celery via

@@ -24,14 +24,14 @@ __pycache__/
 *.pyc
 *.pt
 
-# YOLO/Datasets
-dataset.zip
-dataset_tmp/
-license_plate_dataset/
-runs/
-Videos/
-web_logs.txt
+# Local datasets, training runs, and test media under data/.
+# syn_eval/ is the exception: small + labelled, so it stays tracked.
+data/*
+!data/syn_eval/
 
-kaggle_dataset/
-lp_dataset2/
+# Model weights (large binaries, pulled separately)
 pretrained_weights/
+
+# Logs
+web_logs.txt
+*.log

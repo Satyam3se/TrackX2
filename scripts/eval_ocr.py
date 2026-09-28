@@ -10,9 +10,10 @@ plates), each crop is first downscaled to ``--width`` pixels wide, then the
 pipeline is allowed to upscale it again -- exactly what happens on a distant
 plate in a video frame.
 
-Usage:
-    python scripts/eval_ocr.py --dir syn_eval --width 96
-    python scripts/eval_ocr.py --dir syn_eval --width 64 --limit 100
+Usage (from the repo root):
+    python scripts/eval_ocr.py --width 96
+    python scripts/eval_ocr.py --width 64 --limit 100
+    python scripts/eval_ocr.py --dir data/syn_eval --width 96
 """
 
 import argparse
@@ -68,7 +69,7 @@ def load_labels(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--dir', default='syn_eval')
+    ap.add_argument('--dir', default=os.path.join('data', 'syn_eval'))
     ap.add_argument('--width', type=int, default=96,
                     help='Downscale crop to this width before OCR (0=off)')
     ap.add_argument('--limit', type=int, default=0)

@@ -64,7 +64,7 @@ services:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
       - trackx_web_cache:/root/.cache
-      - ./license_plate_detector.pt:/app/license_plate_detector.pt
+      - ./pretrained_weights/license_plate_detector.pt:/app/pretrained_weights/license_plate_detector.pt
     ports:
       - "8000:8000"
     depends_on:
@@ -97,7 +97,7 @@ services:
     volumes:
       - trackx_media:/app/media
       - trackx_models:/app/easyocr_models
-      - ./license_plate_detector.pt:/app/license_plate_detector.pt
+      - ./pretrained_weights/license_plate_detector.pt:/app/pretrained_weights/license_plate_detector.pt
     depends_on:
       db:
         condition: service_healthy

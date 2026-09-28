@@ -134,7 +134,7 @@ docker compose exec web python manage.py seed_trackx
 ### Why `v1.1` reads low-res footage better
 - The fast-OCR input is the RAW crop passed through the heavy pipeline *minus* the unsharp mask. The unsharp mask helps synthetic clean renders but **hurts real blurry low-res plates** (measured: 63% → 70% correct reads on the `TS07JS9670` test window) because it amplifies sensor/compression noise.
 - EasyOCR fallback still uses the fully-sharpened pipeline it was tuned for.
-- Labeled synthetic-benchmark tooling lives in `scripts/eval_ocr.py` (exact + per-character accuracy over `syn_eval/`, with `--width` resolution-scaling); it tracked no regression for this change (w96 exact 18.3% → 19.2%, char 45.1% → 47.9%).
+- Labeled synthetic-benchmark tooling lives in `scripts/eval_ocr.py` (exact + per-character accuracy over `data/syn_eval/`, with `--width` resolution-scaling); it tracked no regression for this change (w96 exact 18.3% → 19.2%, char 45.1% → 47.9%).
 
 ---
 

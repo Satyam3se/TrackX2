@@ -103,13 +103,14 @@ def _load_yolo_class():
 def get_yolo_model(weights_path: str | None = None):
     """Return a cached YOLO model instance (per weights path).
 
-    Defaults to the base ``yolov8n.pt``; for accurate plate detection use
-    ``YOLO_WEIGHTS`` pointing to fine‑tuned weights (e.g.
-    ``license_plate_detector.pt``). The cache is keyed by path so multiple
-    candidate detectors can be loaded without re-instantiating each frame.
+    Defaults to the base COCO model at ``pretrained_weights/yolov8n.pt``; for
+    accurate plate detection use ``YOLO_WEIGHTS`` pointing to fine‑tuned
+    weights (e.g. ``pretrained_weights/license_plate_detector.pt``). The cache
+    is keyed by path so multiple candidate detectors can be loaded without
+    re-instantiating each frame.
     """
     if weights_path is None:
-        weights_path = os.environ.get('YOLO_WEIGHTS', 'yolov8n.pt')
+        weights_path = os.environ.get('YOLO_WEIGHTS', 'pretrained_weights/yolov8n.pt')
     try:
         # Attempt loading with device argument (works on older versions)
         model = _load_yolo_class()(weights_path, device='cpu')
@@ -126,7 +127,7 @@ def get_yolo_model(weights_path: str | None = None):
 
 DETECTOR_CHAIN = (
     'pretrained_weights/platevision_plate_detector.pt',  # tuned plate detector (mAP50 .92)
-    'license_plate_detector.pt',                         # TrackX Indian-plate fine-tune
+    'pretrained_weights/license_plate_detector.pt',        # TrackX Indian-plate fine-tune
 )
 
 
@@ -135,7 +136,8 @@ def get_plate_detector():
 
     An explicit ``YOLO_WEIGHTS`` env override (e.g. in ``.env``) always wins.
     Otherwise tries ``DETECTOR_CHAIN`` paths first (a tuned plate model wins),
-    falling back to the base ``yolov8n.pt``. Missing weight files are skipped.
+    falling back to the base ``pretrained_weights/yolov8n.pt``. Missing weight
+    files are skipped.
     """
     env_weights = os.environ.get('YOLO_WEIGHTS')
     if env_weights:
@@ -407,7 +409,8 @@ def _detect_plate_with_contours(image_bgr):
 def _detect_vehicle_bbox(image_bgr, conf_threshold=0.35):
     """Return a COCO vehicle bounding box ``[x1, y1, x2, y2]`` or None.
 
-    Uses the base COCO model (``get_yolo_model(None)`` -> yolov8n.pt) and
+    Uses the base COCO model (``get_yolo_model(None)`` ->
+    pretrained_weights/yolov8n.pt) and
     keeps car/bus/truck/auto/motorcycle classes. Vehicles sit lower in the
     frame, so among confident detections we prefer the one whose bottom is
     closest to the frame bottom (that is where a plate can be OCR'd).
@@ -451,7 +454,7 @@ def _detect_vehicle_bbox(image_bgr, conf_threshold=0.35):
 @lru_cache(maxsize=1)
 def _get_vehicle_model():
     try:
-        return get_yolo_model(os.environ.get('YOLO_VEHICLE_WEIGHTS') or 'yolov8n.pt')
+        return get_yolo_model(os.environ.get('YOLO_VEHICLE_WEIGHTS') or 'pretrained_weights/yolov8n.pt')
     except Exception as exc:
         print(f'[WARN] vehicle model unavailable: {exc}')
         return None

@@ -1,4 +1,8 @@
-$datasetRoot = "C:\Users\acer\Documents\track-x\license_plate_dataset"
+# Flattens each split's loose *.jpg / *.txt into images\ and labels\ subfolders.
+# Paths resolve from the repo root, so it works from any working directory.
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$datasetRoot = Join-Path $repoRoot "data\license_plate_dataset"
 
 foreach ($split in @("train","val","test")) {
     $splitPath = Join-Path $datasetRoot $split

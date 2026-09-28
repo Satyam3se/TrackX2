@@ -3,10 +3,12 @@ TrackX -- Custom ANPR Model Training Pipeline
 =============================================
 Downloads the Indian Number Plates dataset from Kaggle,
 auto-converts it to YOLOv8 format, trains a YOLOv8-nano model,
-and copies the best weights to license_plate_detector.pt.
+and copies the best weights to pretrained_weights/license_plate_detector.pt.
+
+All paths below are relative to the repository root, so run this from there:
 
 Usage:
-    python train_custom_model.py [--epochs 50] [--imgsz 640] [--batch 8]
+    python scripts/train_custom_model.py [--epochs 50] [--imgsz 640] [--batch 8]
 
 Requirements:
     pip install ultralytics kaggle opencv-python-headless pyyaml
@@ -21,13 +23,16 @@ import random
 import yaml
 
 # -------------------------------------------------------------
-# CONFIG
+# CONFIG  (all paths relative to the repository root)
 # -------------------------------------------------------------
 KAGGLE_DATASET = "dataclusterlabs/indian-number-plates-dataset"
-DOWNLOAD_DIR   = "kaggle_dataset"
-DATASET_DIR    = "license_plate_dataset"
+DOWNLOAD_DIR   = os.path.join("data", "kaggle_dataset")
+DATASET_DIR    = os.path.join("data", "license_plate_dataset")
 YAML_FILE      = os.path.join(DATASET_DIR, "data.yaml")
-OUTPUT_WEIGHTS = "license_plate_detector.pt"
+BASE_WEIGHTS   = os.path.join("pretrained_weights", "yolov8n.pt")
+OUTPUT_WEIGHTS = os.path.join("pretrained_weights", "license_plate_detector.pt")
+RUNS_PROJECT   = os.path.join("data", "runs", "detect")
+RUN_NAME       = "license_plate_trackx"
 
 
 # -------------------------------------------------------------
@@ -161,7 +166,7 @@ def train_model(epochs: int, imgsz: int, batch: int):
     from ultralytics import YOLO
 
     print(f"\n[->] Loading YOLOv8-nano base model ...")
-    model = YOLO("yolov8n.pt")
+    model = YOLO(BASE_WEIGHTS)
 
     print(f"[->] Starting training: epochs={epochs}, imgsz={imgsz}, batch={batch}")
     print("    This may take 10-60 minutes depending on your hardware.\n")
@@ -171,8 +176,8 @@ def train_model(epochs: int, imgsz: int, batch: int):
         epochs=epochs,
         imgsz=imgsz,
         batch=batch,
-        name="license_plate_trackx",
-        project="runs/detect",
+        name=RUN_NAME,
+        project=RUNS_PROJECT,
         patience=15,      # early stopping
         device="cpu",     # change to 0 if you have a CUDA GPU
         workers=0,        # avoids Windows multiprocessing issues
@@ -181,14 +186,15 @@ def train_model(epochs: int, imgsz: int, batch: int):
     )
 
     # Locate best weights (may have numeric suffix on repeated runs)
-    best = os.path.join("runs", "detect", "license_plate_trackx", "weights", "best.pt")
+    best = os.path.join(RUNS_PROJECT, RUN_NAME, "weights", "best.pt")
     if not os.path.isfile(best):
         candidates = sorted(glob.glob(
-            os.path.join("runs", "detect", "license_plate_trackx*", "weights", "best.pt")
+            os.path.join(RUNS_PROJECT, RUN_NAME + "*", "weights", "best.pt")
         ))
         best = candidates[-1] if candidates else None
 
     if best and os.path.isfile(best):
+        os.makedirs(os.path.dirname(OUTPUT_WEIGHTS), exist_ok=True)
         shutil.copy2(best, OUTPUT_WEIGHTS)
         print(f"\n[OK] Training complete!")
         print(f"    Best weights : {best}")
@@ -196,7 +202,7 @@ def train_model(epochs: int, imgsz: int, batch: int):
         print(f"\n[->] Restart Daphne to apply the new model:")
         print(f"    daphne -b 0.0.0.0 -p 9000 trackx.asgi:application")
     else:
-        print("[!] Could not find best.pt -- check the runs/ directory manually.")
+        print("[!] Could not find best.pt -- check the data/runs/ directory manually.")
 
 
 # -------------------------------------------------------------

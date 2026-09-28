@@ -5,7 +5,7 @@ import time, cv2, numpy as np
 from fast_alpr.default_detector import DefaultDetector
 from fast_plate_ocr import LicensePlateRecognizer
 
-cap = cv2.VideoCapture('Videos/WhatsApp Video 2026-09-12 at 21.55.08.mp4')
+cap = cv2.VideoCapture('data/Videos/WhatsApp Video 2026-09-12 at 21.55.08.mp4')
 def frame(i):
     cap.set(cv2.CAP_PROP_POS_FRAMES, i); ok, f = cap.read(); return f
 

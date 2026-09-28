@@ -23,6 +23,15 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 
+# Datasets, training runs, test media, and the syn_eval benchmark -- never
+# needed inside the image. Without this, `COPY . .` pulls ~1.9GB into every
+# build.
+data/
+
+# Model weights: pretrained_weights/ is required at runtime, but the 233MB
+# legacy lapi.weights is not -- exclude just that.
+pretrained_weights/lapi.weights
+
 # Tooling
 .idea/
 .vscode/
